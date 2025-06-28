@@ -16,9 +16,16 @@ from typing import Dict, List, Tuple, Optional, Any, Callable
 from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
 from pathlib import Path
+import time
+from tqdm import tqdm
+import warnings
+from torch.utils.data import TensorDataset, DataLoader
 
 from config.training_config import TrainingConfig
 from models.combined_model import CombinedModel, FlexibleCombinedModel
+
+# Import GPU monitoring
+from utils.gpu_monitor import GPUMonitor, log_memory_usage
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +59,55 @@ class ModelTrainer:
         self.scalers = scalers
         self.data_info = data_info
         
+        # Ensure all arrays in train/test splits have the same number of samples
+        for split_name in ['train', 'test']:
+            split = getattr(self, f'{split_name}_data')
+            # Find min length
+            lengths = [v.shape[0] for k, v in split.items() if isinstance(v, torch.Tensor)]
+            for k, v in split.items():
+                if isinstance(v, torch.Tensor) and v.shape[0] != min(lengths):
+                    split[k] = v[:min(lengths)]
+            # For dicts (list_1d, list_2d)
+            for k in ['list_1d', 'list_2d']:
+                if k in split and isinstance(split[k], dict):
+                    dict_lengths = [vv.shape[0] for vv in split[k].values()]
+                    min_dict_len = min(dict_lengths) if dict_lengths else min(lengths)
+                    for kk, vv in split[k].items():
+                        if vv.shape[0] != min_dict_len:
+                            split[k][kk] = vv[:min_dict_len]
+        
         # Setup device
         self.device = self.config.get_device()
         self.model.to(self.device)
         
-        # Setup optimizer and scheduler
-        self.optimizer = self.config.get_optimizer(self.model)
-        self.scheduler = self.config.get_scheduler(self.optimizer)
+        # Initialize GPU monitoring
+        self.gpu_monitor = GPUMonitor(self.device)
         
-        # Setup loss functions
-        self.criterion_scalar = nn.MSELoss()
-        self.criterion_vector = nn.MSELoss()
-        self.criterion_matrix = nn.MSELoss()
+        # Setup mixed precision training
+        self.use_amp = self.config.use_amp and self.device.type == "cuda"
+        if self.use_amp:
+            self.scaler = torch.amp.GradScaler('cuda')
+            logger.info("Automatic Mixed Precision (AMP) enabled")
+        else:
+            self.scaler = None
+        
+        # Setup optimizer
+        self.optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay
+        )
+        
+        # Setup learning rate scheduler
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.5,
+            patience=5
+        )
+        
+        # Setup loss function
+        self.criterion = nn.MSELoss()
         
         # Training state
         self.train_losses = []
@@ -71,8 +115,21 @@ class ModelTrainer:
         self.best_val_loss = float('inf')
         self.patience_counter = 0
         
-        # Move data to device
-        self._move_data_to_device()
+        # Prepare y_list_1d and y_list_2d as tensors for train and test
+        self.train_data['y_list_1d'] = self._concat_list_columns(self.train_data['list_1d'], self.data_info['y_list_columns_1d'])
+        self.test_data['y_list_1d'] = self._concat_list_columns(self.test_data['list_1d'], self.data_info['y_list_columns_1d'])
+        self.train_data['y_list_2d'] = self._concat_list_columns_2d(self.train_data['list_2d'], self.data_info['y_list_columns_2d'])
+        self.test_data['y_list_2d'] = self._concat_list_columns_2d(self.test_data['list_2d'], self.data_info['y_list_columns_2d'])
+        
+        # Prepare input list_1d and list_2d as tensors for train and test
+        self.train_data['list_1d_tensor'] = self._concat_list_columns(self.train_data['list_1d'], self.data_info['x_list_columns_1d'])
+        self.test_data['list_1d_tensor'] = self._concat_list_columns(self.test_data['list_1d'], self.data_info['x_list_columns_1d'])
+        self.train_data['list_2d_tensor'] = self._concat_list_columns_2d(self.train_data['list_2d'], self.data_info['x_list_columns_2d'])
+        self.test_data['list_2d_tensor'] = self._concat_list_columns_2d(self.test_data['list_2d'], self.data_info['x_list_columns_2d'])
+        
+        # Log initial GPU stats
+        if self.config.log_gpu_memory:
+            self.gpu_monitor.log_gpu_stats("Initial ")
         
         logger.info(f"Trainer initialized on device: {self.device}")
     
@@ -95,130 +152,300 @@ class ModelTrainer:
             self.train_data[key] = {k: v.to(self.device) for k, v in self.train_data[key].items()}
             self.test_data[key] = {k: v.to(self.device) for k, v in self.test_data[key].items()}
     
+    def _concat_list_columns(self, list_dict, col_names):
+        """Concatenate 1D list columns into a tensor."""
+        tensors = [list_dict[col] for col in col_names if col in list_dict]
+        if tensors:
+            return torch.cat(tensors, dim=1)
+        else:
+            # Return empty tensor with correct batch size
+            batch_size = next(iter(list_dict.values())).shape[0] if list_dict else 0
+            return torch.empty((batch_size, 0), device=self.device)
+
+    def _concat_list_columns_2d(self, list_dict, col_names):
+        """Concatenate 2D list columns into a tensor."""
+        tensors = [list_dict[col].unsqueeze(1) for col in col_names if col in list_dict]
+        if tensors:
+            return torch.cat(tensors, dim=1)
+        else:
+            batch_size = next(iter(list_dict.values())).shape[0] if list_dict else 0
+            return torch.empty((batch_size, 0, 0, 0), device=self.device)
+    
     def train_epoch(self) -> float:
-        """
-        Train for one epoch.
-        
-        Returns:
-            Average training loss for the epoch
-        """
+        """Train for one epoch."""
         self.model.train()
-        running_loss = 0.0
+        total_loss = 0.0
         num_batches = 0
         
-        train_size = self.train_data['time_series'].shape[0]
+        # Create data loader with GPU optimizations
+        train_dataset = TensorDataset(
+            self.train_data['time_series'],
+            self.train_data['static'],
+            self.train_data['target'],
+            self.train_data['list_1d_tensor'],
+            self.train_data['list_2d_tensor'],
+            self.train_data['y_list_1d'],
+            self.train_data['y_list_2d']
+        )
         
-        for i in range(0, train_size, self.config.batch_size):
-            end_idx = min(i + self.config.batch_size, train_size)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            pin_memory=self.config.pin_memory,
+            num_workers=self.config.num_workers,
+            prefetch_factor=self.config.prefetch_factor,
+            persistent_workers=self.config.persistent_workers
+        )
+        
+        progress_bar = tqdm(train_loader, desc="Training")
+        
+        for batch_idx, (time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d) in enumerate(progress_bar):
+            # Move data to device
+            time_series = time_series.to(self.device, non_blocking=True)
+            static = static.to(self.device, non_blocking=True)
+            target = target.to(self.device, non_blocking=True)
+            list_1d = list_1d.to(self.device, non_blocking=True)
+            list_2d = list_2d.to(self.device, non_blocking=True)
+            y_list_1d = y_list_1d.to(self.device, non_blocking=True)
+            y_list_2d = y_list_2d.to(self.device, non_blocking=True)
             
-            # Prepare batch data
-            batch_data = self._prepare_batch_data(self.train_data, i, end_idx)
-            
-            # Forward pass
+            # Zero gradients
             self.optimizer.zero_grad()
-            scalar_pred, vector_pred, matrix_pred = self.model(
-                batch_data['time_series'],
-                batch_data['static'],
-                batch_data['list_1d'],
-                batch_data['list_2d']
-            )
             
-            # Calculate losses
-            loss = self._calculate_loss(
-                scalar_pred, vector_pred, matrix_pred,
-                batch_data['target'], batch_data['y_list_1d'], batch_data['y_list_2d']
-            )
+            # Forward pass with mixed precision
+            if self.use_amp:
+                with torch.amp.autocast('cuda'):
+                    scalar_pred, vector_pred, matrix_pred = self.model(
+                        time_series, static, list_1d, list_2d
+                    )
+                    loss = self._compute_loss(
+                        scalar_pred, vector_pred, matrix_pred,
+                        target, y_list_1d, y_list_2d
+                    )
+                
+                # Backward pass with gradient scaling
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                scalar_pred, vector_pred, matrix_pred = self.model(
+                    time_series, static, list_1d, list_2d
+                )
+                loss = self._compute_loss(
+                    scalar_pred, vector_pred, matrix_pred,
+                    target, y_list_1d, y_list_2d
+                )
+                loss.backward()
+                self.optimizer.step()
             
-            # Backward pass
-            loss.backward()
-            self.optimizer.step()
-            
-            running_loss += loss.item()
+            total_loss += loss.item()
             num_batches += 1
+            
+            # Update progress bar
+            progress_bar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'avg_loss': f'{total_loss/num_batches:.4f}'
+            })
+            
+            # GPU memory management
+            if batch_idx % self.config.empty_cache_freq == 0:
+                self.gpu_monitor.empty_cache()
+            
+            # GPU monitoring
+            if (batch_idx % self.config.gpu_monitor_interval == 0 and 
+                self.config.log_gpu_memory):
+                self.gpu_monitor.log_gpu_stats(f"Batch {batch_idx} ")
+            
+            # Check memory threshold
+            if self.gpu_monitor.check_memory_threshold(self.config.max_memory_usage):
+                logger.warning(f"GPU memory usage exceeds {self.config.max_memory_usage*100}%")
+                self.gpu_monitor.empty_cache()
         
-        return running_loss / num_batches
+        return total_loss / num_batches
     
     def validate_epoch(self) -> float:
-        """
-        Validate for one epoch.
-        
-        Returns:
-            Average validation loss for the epoch
-        """
+        """Validate for one epoch."""
         self.model.eval()
-        running_loss = 0.0
+        total_loss = 0.0
         num_batches = 0
         
-        test_size = self.test_data['time_series'].shape[0]
+        # Create data loader with GPU optimizations
+        val_dataset = TensorDataset(
+            self.test_data['time_series'],
+            self.test_data['static'],
+            self.test_data['target'],
+            self.test_data['list_1d_tensor'],
+            self.test_data['list_2d_tensor'],
+            self.test_data['y_list_1d'],
+            self.test_data['y_list_2d']
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            pin_memory=self.config.pin_memory,
+            num_workers=self.config.num_workers,
+            prefetch_factor=self.config.prefetch_factor,
+            persistent_workers=self.config.persistent_workers
+        )
         
         with torch.no_grad():
-            for i in range(0, test_size, self.config.batch_size):
-                end_idx = min(i + self.config.batch_size, test_size)
+            progress_bar = tqdm(val_loader, desc="Validation")
+            
+            for batch_idx, (time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d) in enumerate(progress_bar):
+                # Move data to device
+                time_series = time_series.to(self.device, non_blocking=True)
+                static = static.to(self.device, non_blocking=True)
+                target = target.to(self.device, non_blocking=True)
+                list_1d = list_1d.to(self.device, non_blocking=True)
+                list_2d = list_2d.to(self.device, non_blocking=True)
+                y_list_1d = y_list_1d.to(self.device, non_blocking=True)
+                y_list_2d = y_list_2d.to(self.device, non_blocking=True)
                 
-                # Prepare batch data
-                batch_data = self._prepare_batch_data(self.test_data, i, end_idx)
+                # Forward pass with mixed precision
+                if self.use_amp:
+                    with torch.amp.autocast('cuda'):
+                        scalar_pred, vector_pred, matrix_pred = self.model(
+                            time_series, static, list_1d, list_2d
+                        )
+                        loss = self._compute_loss(
+                            scalar_pred, vector_pred, matrix_pred,
+                            target, y_list_1d, y_list_2d
+                        )
+                else:
+                    scalar_pred, vector_pred, matrix_pred = self.model(
+                        time_series, static, list_1d, list_2d
+                    )
+                    loss = self._compute_loss(
+                        scalar_pred, vector_pred, matrix_pred,
+                        target, y_list_1d, y_list_2d
+                    )
                 
-                # Forward pass
-                scalar_pred, vector_pred, matrix_pred = self.model(
-                    batch_data['time_series'],
-                    batch_data['static'],
-                    batch_data['list_1d'],
-                    batch_data['list_2d']
-                )
-                
-                # Calculate losses
-                loss = self._calculate_loss(
-                    scalar_pred, vector_pred, matrix_pred,
-                    batch_data['target'], batch_data['y_list_1d'], batch_data['y_list_2d']
-                )
-                
-                running_loss += loss.item()
+                total_loss += loss.item()
                 num_batches += 1
+                
+                # Update progress bar
+                progress_bar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'avg_loss': f'{total_loss/num_batches:.4f}'
+                })
         
-        return running_loss / num_batches
+        return total_loss / num_batches
     
     def _prepare_batch_data(self, data: Dict[str, Any], start_idx: int, end_idx: int) -> Dict[str, Any]:
         """Prepare batch data for training/validation."""
         batch_data = {}
+        batch_size = end_idx - start_idx
+        device = data['time_series'].device
         
         # Time series and static data
         batch_data['time_series'] = data['time_series'][start_idx:end_idx]
         batch_data['static'] = data['static'][start_idx:end_idx]
         batch_data['target'] = data['target'][start_idx:end_idx]
+        assert batch_data['time_series'].shape[0] == batch_size, f"time_series batch size mismatch: {batch_data['time_series'].shape[0]} vs {batch_size}"
+        assert batch_data['static'].shape[0] == batch_size, f"static batch size mismatch: {batch_data['static'].shape[0]} vs {batch_size}"
+        assert batch_data['target'].shape[0] == batch_size, f"target batch size mismatch: {batch_data['target'].shape[0]} vs {batch_size}"
         
-        # List data
-        batch_data['list_1d'] = torch.cat([
-            tensor[start_idx:end_idx] for tensor in data['list_1d'].values()
-        ], dim=1)
+        # List data - separate input and target
+        # Input 1D data (only x_list_columns_1d)
+        input_1d_tensors = []
+        for col in self.data_info['x_list_columns_1d']:
+            if col in data['list_1d']:
+                t = data['list_1d'][col][start_idx:end_idx]
+                input_1d_tensors.append(t)
+            else:
+                input_1d_tensors.append(torch.zeros(batch_size, self.data_info['vector_length'], device=device))
+        if input_1d_tensors:
+            batch_data['list_1d'] = torch.cat(input_1d_tensors, dim=1)
+        else:
+            batch_data['list_1d'] = torch.empty(batch_size, 0, device=device)
+        assert batch_data['list_1d'].shape[0] == batch_size, f"list_1d batch size mismatch: {batch_data['list_1d'].shape[0]} vs {batch_size}"
         
-        batch_data['list_2d'] = torch.cat([
-            tensor[start_idx:end_idx].unsqueeze(1) for tensor in data['list_2d'].values()
-        ], dim=1)
+        # Input 2D data (only x_list_columns_2d)
+        input_2d_tensors = []
+        for col in self.data_info['x_list_columns_2d']:
+            if col in data['list_2d']:
+                t = data['list_2d'][col][start_idx:end_idx]
+                if t.shape[0] != batch_size:
+                    t = torch.zeros(batch_size, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device)
+                input_2d_tensors.append(t.unsqueeze(1))
+            else:
+                input_2d_tensors.append(torch.zeros(batch_size, 1, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device))
+        if input_2d_tensors:
+            batch_data['list_2d'] = torch.cat(input_2d_tensors, dim=1)
+        else:
+            batch_data['list_2d'] = torch.empty(batch_size, 0, 0, 0, device=device)
+        assert batch_data['list_2d'].shape[0] == batch_size, f"list_2d batch size mismatch: {batch_data['list_2d'].shape[0]} vs {batch_size}"
         
-        # Target list data
-        batch_data['y_list_1d'] = torch.cat([
-            tensor[start_idx:end_idx] for tensor in data['list_1d'].values()
-        ], dim=1).view(end_idx - start_idx, len(self.data_info['y_list_columns_1d']), -1)
+        # Target 1D data (only y_list_columns_1d)
+        target_1d_tensors = []
+        for col in self.data_info['y_list_columns_1d']:
+            if col in data['list_1d']:
+                t = data['list_1d'][col][start_idx:end_idx]
+                target_1d_tensors.append(t)
+            else:
+                target_1d_tensors.append(torch.zeros(batch_size, self.data_info['vector_length'], device=device))
+        if target_1d_tensors:
+            batch_data['y_list_1d'] = torch.cat(target_1d_tensors, dim=1)
+        else:
+            batch_data['y_list_1d'] = torch.empty(batch_size, 0, device=device)
+        assert batch_data['y_list_1d'].shape[0] == batch_size, f"y_list_1d batch size mismatch: {batch_data['y_list_1d'].shape[0]} vs {batch_size}"
         
-        batch_data['y_list_2d'] = torch.cat([
-            tensor[start_idx:end_idx].unsqueeze(1) for tensor in data['list_2d'].values()
-        ], dim=1)
+        # Target 2D data (only y_list_columns_2d)
+        target_2d_tensors = []
+        for col in self.data_info['y_list_columns_2d']:
+            if col in data['list_2d']:
+                t = data['list_2d'][col][start_idx:end_idx]
+                if t.shape[0] != batch_size:
+                    t = torch.zeros(batch_size, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device)
+                target_2d_tensors.append(t.unsqueeze(1))
+            else:
+                target_2d_tensors.append(torch.zeros(batch_size, 1, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device))
+        if target_2d_tensors:
+            batch_data['y_list_2d'] = torch.cat(target_2d_tensors, dim=1)
+        else:
+            batch_data['y_list_2d'] = torch.empty(batch_size, 0, 0, 0, device=device)
+        assert batch_data['y_list_2d'].shape[0] == batch_size, f"y_list_2d batch size mismatch: {batch_data['y_list_2d'].shape[0]} vs {batch_size}"
         
         return batch_data
     
-    def _calculate_loss(self, scalar_pred: torch.Tensor, vector_pred: torch.Tensor, 
-                       matrix_pred: torch.Tensor, target: torch.Tensor,
-                       y_list_1d: torch.Tensor, y_list_2d: torch.Tensor) -> torch.Tensor:
-        """Calculate total loss with weighted components."""
-        loss_scalar = self.criterion_scalar(scalar_pred, target)
-        loss_vector = self.criterion_vector(vector_pred, y_list_1d)
-        loss_matrix = self.criterion_matrix(matrix_pred, y_list_2d)
+    def _compute_loss(self, scalar_pred, vector_pred, matrix_pred, target, y_list_1d, y_list_2d):
+        """Compute the total loss."""
+        total_loss = 0.0
         
-        total_loss = (
-            self.config.scalar_loss_weight * loss_scalar +
-            self.config.vector_loss_weight * loss_vector +
-            self.config.matrix_loss_weight * loss_matrix
-        )
+        # Scalar loss (only if target has features)
+        if target.shape[1] > 0:
+            loss_scalar = self.criterion(scalar_pred, target)
+            total_loss += self.config.scalar_loss_weight * loss_scalar
+        else:
+            loss_scalar = torch.tensor(0.0, device=self.device)
+        
+        # Vector loss (only if we have 1D list targets)
+        if y_list_1d.shape[1] > 0:
+            # Flatten both predictions and targets to [batch_size, -1]
+            loss_vector = self.criterion(
+                vector_pred.view(vector_pred.size(0), -1),
+                y_list_1d.view(y_list_1d.size(0), -1)
+            )
+            total_loss += self.config.vector_loss_weight * loss_vector
+        else:
+            loss_vector = torch.tensor(0.0, device=self.device)
+        
+        # Matrix loss (only if we have 2D list targets)
+        if y_list_2d.shape[1] > 0:
+            loss_matrix = self.criterion(matrix_pred, y_list_2d)
+            total_loss += self.config.matrix_loss_weight * loss_matrix
+        else:
+            loss_matrix = torch.tensor(0.0, device=self.device)
+        
+        # Log loss weights for debugging
+        if hasattr(self, '_loss_logged') and not self._loss_logged:
+            logger.info(f"Loss weights - Scalar: {self.config.scalar_loss_weight:.4f}, "
+                       f"Vector: {self.config.vector_loss_weight:.4f}, "
+                       f"Matrix: {self.config.matrix_loss_weight:.4f}")
+            self._loss_logged = True
         
         return total_loss
     
@@ -247,9 +474,11 @@ class ModelTrainer:
                 
                 # Log loss weights
                 loss_weights = self.model.get_loss_weights()
-                logger.info(f"Loss weights - Scalar: {loss_weights['scalar']:.4f}, "
-                           f"Vector: {loss_weights['vector']:.4f}, "
-                           f"Matrix: {loss_weights['matrix']:.4f}")
+                log_msg = f"Loss weights - "
+                if 'scalar' in loss_weights:
+                    log_msg += f"Scalar: {loss_weights['scalar']:.4f}, "
+                log_msg += f"Vector: {loss_weights['vector']:.4f}, Matrix: {loss_weights['matrix']:.4f}"
+                logger.info(log_msg)
                 
                 # Early stopping
                 if self.config.use_early_stopping:
@@ -277,90 +506,168 @@ class ModelTrainer:
             self.patience_counter += 1
             return self.patience_counter >= self.config.patience
     
-    def evaluate(self) -> Dict[str, float]:
-        """
-        Evaluate the trained model on test data.
-        
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        logger.info("Evaluating model on test data...")
-        
+    def evaluate(self) -> Tuple[Dict[str, Any], Dict[str, float]]:
+        """Evaluate the model and return predictions and metrics."""
         self.model.eval()
-        predictions = self._get_predictions()
         
-        # Calculate metrics
-        metrics = self._calculate_metrics(predictions)
+        # Create evaluation data loader
+        eval_dataset = TensorDataset(
+            self.test_data['time_series'],
+            self.test_data['static'],
+            self.test_data['target'],
+            self.test_data['list_1d_tensor'],
+            self.test_data['list_2d_tensor'],
+            self.test_data['y_list_1d'],
+            self.test_data['y_list_2d']
+        )
         
-        logger.info(f"Test metrics: {metrics}")
-        return metrics
-    
-    def _get_predictions(self) -> Dict[str, np.ndarray]:
-        """Get predictions on test data."""
-        predictions_scalar = []
-        predictions_vector = []
-        predictions_matrix = []
+        eval_loader = DataLoader(
+            eval_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            pin_memory=self.config.pin_memory,
+            num_workers=self.config.num_workers
+        )
         
-        test_size = self.test_data['time_series'].shape[0]
+        all_predictions = {
+            'scalar': [],
+            'vector': [],
+            'matrix': []
+        }
+        all_targets = {
+            'scalar': [],
+            'vector': [],
+            'matrix': []
+        }
         
         with torch.no_grad():
-            for i in range(0, test_size, self.config.batch_size):
-                end_idx = min(i + self.config.batch_size, test_size)
+            for time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d in eval_loader:
+                # Move to device
+                time_series = time_series.to(self.device, non_blocking=True)
+                static = static.to(self.device, non_blocking=True)
+                target = target.to(self.device, non_blocking=True)
+                list_1d = list_1d.to(self.device, non_blocking=True)
+                list_2d = list_2d.to(self.device, non_blocking=True)
+                y_list_1d = y_list_1d.to(self.device, non_blocking=True)
+                y_list_2d = y_list_2d.to(self.device, non_blocking=True)
                 
-                # Prepare batch data
-                batch_data = self._prepare_batch_data(self.test_data, i, end_idx)
+                # Forward pass with mixed precision
+                if self.use_amp:
+                    with torch.amp.autocast('cuda'):
+                        scalar_pred, vector_pred, matrix_pred = self.model(
+                            time_series, static, list_1d, list_2d
+                        )
+                else:
+                    scalar_pred, vector_pred, matrix_pred = self.model(
+                        time_series, static, list_1d, list_2d
+                    )
                 
-                # Get predictions
-                scalar_pred, vector_pred, matrix_pred = self.model(
-                    batch_data['time_series'],
-                    batch_data['static'],
-                    batch_data['list_1d'],
-                    batch_data['list_2d']
-                )
+                # Collect predictions and targets
+                all_predictions['scalar'].append(scalar_pred.cpu())
+                all_predictions['vector'].append(vector_pred.cpu())
+                all_predictions['matrix'].append(matrix_pred.cpu())
                 
-                predictions_scalar.append(scalar_pred.cpu().numpy())
-                predictions_vector.append(vector_pred.cpu().numpy())
-                predictions_matrix.append(matrix_pred.cpu().numpy())
+                all_targets['scalar'].append(target.cpu())
+                all_targets['vector'].append(y_list_1d.cpu())
+                all_targets['matrix'].append(y_list_2d.cpu())
         
-        return {
-            'scalar': np.concatenate(predictions_scalar, axis=0),
-            'vector': np.concatenate(predictions_vector, axis=0),
-            'matrix': np.concatenate(predictions_matrix, axis=0)
+        # Concatenate all batches
+        predictions = {
+            'scalar': torch.cat(all_predictions['scalar'], dim=0),
+            'vector': torch.cat(all_predictions['vector'], dim=0),
+            'matrix': torch.cat(all_predictions['matrix'], dim=0)
         }
+        
+        targets = {
+            'scalar': torch.cat(all_targets['scalar'], dim=0),
+            'vector': torch.cat(all_targets['vector'], dim=0),
+            'matrix': torch.cat(all_targets['matrix'], dim=0)
+        }
+        
+        # Calculate metrics
+        metrics = self._calculate_metrics(predictions, targets)
+        
+        return predictions, metrics
     
-    def _calculate_metrics(self, predictions: Dict[str, np.ndarray]) -> Dict[str, float]:
+    def _calculate_metrics(self, predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """Calculate evaluation metrics."""
+        from sklearn.metrics import mean_squared_error
+        
         metrics = {}
         
         # Scalar metrics
-        test_target = self.test_data['target'].cpu().numpy()
-        mse_scalar = mean_squared_error(test_target, predictions['scalar'])
+        test_target = targets['scalar'].cpu().numpy()
+        pred_scalar = predictions['scalar'].cpu().numpy()
+        mse_scalar = mean_squared_error(test_target, pred_scalar)
         metrics['scalar_rmse'] = np.sqrt(mse_scalar)
         metrics['scalar_mse'] = mse_scalar
         
-        # Vector metrics
-        test_y_list_1d = torch.cat([
-            tensor for tensor in self.test_data['list_1d'].values()
-        ], dim=1).cpu().numpy()
+        # Vector metrics - use the y_list_1d tensor directly
+        if 'vector' in predictions and predictions['vector'].shape[1] > 0:
+            test_y_list_1d = targets['vector'].cpu().numpy()
+            pred_vector = predictions['vector'].cpu().numpy()
+            
+            # Squeeze pred_vector if it has extra singleton dimension
+            if pred_vector.ndim == 3 and pred_vector.shape[1] == 1:
+                pred_vector = pred_vector.squeeze(1)
+            
+            # Ensure shapes match
+            min_samples = min(test_y_list_1d.shape[0], pred_vector.shape[0])
+            test_y_list_1d = test_y_list_1d[:min_samples]
+            pred_vector = pred_vector[:min_samples]
+            
+            mse_vector = mean_squared_error(
+                test_y_list_1d.reshape(-1),
+                pred_vector.reshape(-1)
+            )
+            metrics['vector_rmse'] = np.sqrt(mse_vector)
+            metrics['vector_mse'] = mse_vector
+        else:
+            metrics['vector_rmse'] = 0.0
+            metrics['vector_mse'] = 0.0
         
-        mse_vector = mean_squared_error(
-            test_y_list_1d.reshape(-1, test_y_list_1d.shape[1]),
-            predictions['vector'].reshape(-1, predictions['vector'].shape[1])
-        )
-        metrics['vector_rmse'] = np.sqrt(mse_vector)
-        metrics['vector_mse'] = mse_vector
-        
-        # Matrix metrics
-        test_y_list_2d = torch.cat([
-            tensor.unsqueeze(1) for tensor in self.test_data['list_2d'].values()
-        ], dim=1).cpu().numpy()
-        
-        mse_matrix = mean_squared_error(
-            test_y_list_2d.reshape(-1, test_y_list_2d.shape[1] * test_y_list_2d.shape[2] * test_y_list_2d.shape[3]),
-            predictions['matrix'].reshape(-1, predictions['matrix'].shape[1] * predictions['matrix'].shape[2] * predictions['matrix'].shape[3])
-        )
-        metrics['matrix_rmse'] = np.sqrt(mse_matrix)
-        metrics['matrix_mse'] = mse_matrix
+        # Matrix metrics - use the y_list_2d tensor directly
+        if 'matrix' in predictions and predictions['matrix'].shape[1] > 0:
+            test_y_list_2d = targets['matrix'].cpu().numpy()
+            pred_matrix = predictions['matrix'].cpu().numpy()
+            
+            # Squeeze pred_matrix if it has extra singleton dimension
+            if pred_matrix.ndim == 4 and pred_matrix.shape[1] == 1:
+                pred_matrix = pred_matrix.squeeze(1)
+            
+            # Ensure both arrays have 4 dimensions
+            while test_y_list_2d.ndim < 4:
+                test_y_list_2d = np.expand_dims(test_y_list_2d, axis=-1)
+            while pred_matrix.ndim < 4:
+                pred_matrix = np.expand_dims(pred_matrix, axis=-1)
+            
+            # Ensure shapes match
+            min_samples = min(test_y_list_2d.shape[0], pred_matrix.shape[0])
+            min_channels = min(test_y_list_2d.shape[1], pred_matrix.shape[1])
+            min_rows = min(test_y_list_2d.shape[2], pred_matrix.shape[2])
+            min_cols = min(test_y_list_2d.shape[3], pred_matrix.shape[3])
+            test_y_list_2d = test_y_list_2d[:min_samples, :min_channels, :min_rows, :min_cols]
+            pred_matrix = pred_matrix[:min_samples, :min_channels, :min_rows, :min_cols]
+            
+            # Flatten both arrays to 1D
+            test_y_flat = test_y_list_2d.reshape(-1)
+            pred_flat = pred_matrix.reshape(-1)
+            
+            # Ensure they have the same length
+            min_length = min(len(test_y_flat), len(pred_flat))
+            test_y_flat = test_y_flat[:min_length]
+            pred_flat = pred_flat[:min_length]
+            
+            if min_length > 0:
+                mse_matrix = mean_squared_error(test_y_flat, pred_flat)
+                metrics['matrix_rmse'] = np.sqrt(mse_matrix)
+                metrics['matrix_mse'] = mse_matrix
+            else:
+                metrics['matrix_rmse'] = 0.0
+                metrics['matrix_mse'] = 0.0
+        else:
+            metrics['matrix_rmse'] = 0.0
+            metrics['matrix_mse'] = 0.0
         
         return metrics
     
@@ -387,10 +694,15 @@ class ModelTrainer:
         self._save_predictions(predictions, predictions_dir)
         
         # Save model
-        if self.config.save_model:
-            scripted_model = torch.jit.script(self.model)
-            scripted_model.save(self.config.model_save_path)
-            logger.info(f"Model saved to {self.config.model_save_path}")
+        model_path = predictions_dir / "model.pth"
+        torch.save(self.model.state_dict(), model_path)
+        logger.info(f"Model saved to {model_path}")
+        
+        # Save scripted model (commented out due to TorchScript limitations with custom objects)
+        # scripted_model = torch.jit.script(self.model)
+        # scripted_model_path = predictions_dir / "model_scripted.pt"
+        # scripted_model.save(str(scripted_model_path))
+        # logger.info(f"Scripted model saved to {scripted_model_path}")
         
         # Save metrics
         metrics_df = pd.DataFrame([metrics])
@@ -399,17 +711,12 @@ class ModelTrainer:
     
     def _save_predictions(self, predictions: Dict[str, np.ndarray], predictions_dir: Path):
         """Save predictions with inverse transformation."""
-        # Scalar predictions
-        predictions_scalar_np = self.scalers['target'].inverse_transform(predictions['scalar'])
-        ground_truth_scalar_np = self.scalers['target'].inverse_transform(
-            self.test_data['target'].cpu().numpy()
-        )
-        
-        predictions_df = pd.DataFrame(predictions_scalar_np, columns=self.data_info['target_columns'])
-        ground_truth_df = pd.DataFrame(ground_truth_scalar_np, columns=self.data_info['target_columns'])
-        
-        predictions_df.to_csv(predictions_dir / "predictions_scalar.csv", index=False)
-        ground_truth_df.to_csv(predictions_dir / "ground_truth_scalar.csv", index=False)
+        # Save scalar predictions
+        predictions_scalar_np = predictions['scalar'].cpu().numpy()
+        # Use only the correct number of columns
+        scalar_cols = self.data_info['target_columns'][:predictions_scalar_np.shape[1]]
+        predictions_df = pd.DataFrame(predictions_scalar_np, columns=scalar_cols)
+        predictions_df.to_csv(os.path.join(predictions_dir, 'scalar_predictions.csv'), index=False)
         
         # 1D predictions
         predictions_1d_dict = {}
@@ -485,33 +792,68 @@ class ModelTrainer:
         logger.info(f"Training curves saved to {save_path}")
     
     def run_training_pipeline(self) -> Dict[str, Any]:
-        """
-        Run the complete training pipeline.
-        
-        Returns:
-            Dictionary containing training results
-        """
+        """Run the complete training pipeline."""
         try:
-            # Train the model
-            losses = self.train()
+            logger.info("Starting training pipeline...")
             
-            # Evaluate the model
-            metrics = self.evaluate()
+            # Log initial GPU stats
+            if self.config.log_gpu_memory:
+                self.gpu_monitor.log_gpu_stats("Training start - ")
             
-            # Get predictions
-            predictions = self._get_predictions()
+            # Training loop
+            train_losses = []
+            val_losses = []
+            
+            logger.info(f"Starting training for {self.config.num_epochs} epochs...")
+            
+            for epoch in range(self.config.num_epochs):
+                epoch_start_time = time.time()
+                
+                # Train
+                train_loss = self.train_epoch()
+                train_losses.append(train_loss)
+                
+                # Validate
+                val_loss = self.validate_epoch()
+                val_losses.append(val_loss)
+                
+                # Update learning rate
+                self.scheduler.step(val_loss)
+                
+                epoch_time = time.time() - epoch_start_time
+                
+                # Log epoch results
+                logger.info(f"Epoch [{epoch+1}/{self.config.num_epochs}] - "
+                           f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+                           f"Time: {epoch_time:.2f}s")
+                
+                # Log GPU stats periodically
+                if (epoch % 5 == 0 and self.config.log_gpu_memory):
+                    self.gpu_monitor.log_gpu_stats(f"Epoch {epoch+1} - ")
+                
+                # Check for early stopping
+                if len(val_losses) > 10 and val_losses[-1] > min(val_losses[-10:]):
+                    logger.info("Early stopping triggered")
+                    break
+            
+            logger.info("Training completed")
+            
+            # Final GPU stats
+            if self.config.log_gpu_memory:
+                self.gpu_monitor.log_gpu_stats("Training end - ")
+            
+            # Evaluate and save results
+            logger.info("Evaluating model on test data...")
+            predictions, metrics = self.evaluate()
             
             # Save results
             self.save_results(predictions, metrics)
             
-            # Plot training curves
-            self.plot_training_curves()
-            
             return {
-                'losses': losses,
-                'metrics': metrics,
+                'train_losses': train_losses,
+                'val_losses': val_losses,
                 'predictions': predictions,
-                'model': self.model
+                'metrics': metrics
             }
             
         except Exception as e:

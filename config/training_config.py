@@ -68,6 +68,9 @@ class DataConfig:
     
     # Filtering
     filter_column: Optional[str] = 'H2OSOI_10CM'  # Column to filter NaN values
+    
+    # File loading limits (for testing)
+    max_files: Optional[int] = None  # Maximum number of files to load (None = all files)
 
 
 @dataclass
@@ -132,6 +135,25 @@ class TrainingConfig:
     
     # Device
     device: str = 'auto'  # 'auto', 'cuda', 'cpu'
+    
+    # GPU Optimization
+    use_mixed_precision: bool = True  # Use mixed precision training for faster training
+    use_amp: bool = True  # Use Automatic Mixed Precision
+    use_grad_scaler: bool = True  # Use gradient scaler for mixed precision
+    pin_memory: bool = True  # Pin memory for faster data transfer to GPU
+    num_workers: int = 0  # Number of data loading workers (0 to avoid GPU context issues)
+    prefetch_factor: int = 2  # Number of batches to prefetch
+    persistent_workers: bool = False  # Keep workers alive between epochs
+    
+    # GPU Memory Optimization
+    empty_cache_freq: int = 10  # Empty GPU cache every N batches
+    max_memory_usage: float = 0.9  # Maximum GPU memory usage (0.9 = 90%)
+    memory_efficient_attention: bool = True  # Use memory efficient attention if available
+    
+    # GPU Monitoring
+    log_gpu_memory: bool = True  # Log GPU memory usage
+    log_gpu_utilization: bool = True  # Log GPU utilization
+    gpu_monitor_interval: int = 100  # Log GPU stats every N batches
     
     # Logging and saving
     save_model: bool = True
@@ -252,15 +274,39 @@ def get_default_config() -> TrainingConfigManager:
 
 
 def get_minimal_config() -> TrainingConfigManager:
-    """Get minimal configuration for quick testing."""
+    """Get minimal configuration for fast testing."""
     config = TrainingConfigManager()
-    config.update_training_config(num_epochs=5, batch_size=8)
+    
+    # Update data config for minimal testing
     config.update_data_config(
-        x_list_columns_2d=['soil3c_vr'],
-        y_list_columns_2d=['Y_soil3c_vr'],
-        x_list_columns_1d=['deadcrootc'],
-        y_list_columns_1d=['Y_deadcrootc']
+        max_files=3,  # Limit to 3 files for fast testing
+        train_split=0.8
     )
+    
+    # Update model config for minimal testing
+    config.update_model_config(
+        lstm_hidden_size=64,
+        static_fc_size=128,
+        num_tokens=8,
+        token_dim=64,
+        transformer_heads=4,
+        transformer_layers=2,
+        scalar_output_size=5,  # Number of target columns
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for minimal testing
+    config.update_training_config(
+        num_epochs=2,
+        batch_size=32,  # Increased for A100 GPU
+        learning_rate=0.001,
+        weight_decay=1e-5,
+        device='cuda',  # Use GPU for this run
+        log_gpu_memory=True,
+        prefetch_factor=None
+    )
+    
     return config
 
 

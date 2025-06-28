@@ -188,9 +188,27 @@ def main():
         
         # Create model
         logger.info("Creating model...")
+        
+        # Calculate actual data dimensions
+        actual_1d_size = None
+        actual_2d_channels = None
+        
+        # Check if we have 1D data and get its actual size
+        if split_data['train']['list_1d']:
+            # Use the total concatenated size for all 1D columns
+            actual_1d_size = len(data_info['x_list_columns_1d']) * config.model_config.vector_length
+            logger.info(f"Detected actual 1D input size: {actual_1d_size}")
+        
+        # Check if we have 2D data and get its actual channels
+        if split_data['train']['list_2d']:
+            actual_2d_channels = len(data_info['x_list_columns_2d'])
+            logger.info(f"Detected actual 2D channels: {actual_2d_channels}")
+        
         model = CombinedModel(
             config.model_config,
-            data_info
+            data_info,
+            actual_1d_size=actual_1d_size,
+            actual_2d_channels=actual_2d_channels
         )
         
         # Initialize trainer

@@ -24,18 +24,23 @@ class CombinedModel(nn.Module):
     and fully connected layers for static and 1D data.
     """
     
-    def __init__(self, model_config: ModelConfig, data_info: Dict[str, Any]):
+    def __init__(self, model_config: ModelConfig, data_info: Dict[str, Any], 
+                 actual_1d_size: Optional[int] = None, actual_2d_channels: Optional[int] = None):
         """
         Initialize the combined model.
         
         Args:
             model_config: Model configuration
             data_info: Information about the data structure
+            actual_1d_size: Actual size of 1D input data (if different from config)
+            actual_2d_channels: Actual number of 2D channels (if different from config)
         """
         super(CombinedModel, self).__init__()
         
         self.model_config = model_config
         self.data_info = data_info
+        self.actual_1d_size = actual_1d_size
+        self.actual_2d_channels = actual_2d_channels
         
         # Calculate input dimensions
         self._calculate_input_dimensions()
@@ -61,14 +66,30 @@ class CombinedModel(nn.Module):
         # Static input size
         self.static_input_size = len(self.data_info['static_columns'])
         
-        # 1D input size (total features across all 1D inputs)
-        self.list_1d_input_size = len(self.data_info['x_list_columns_1d']) * self.model_config.vector_length
+        # 1D input size - use actual size if provided, otherwise calculate from config
+        if self.actual_1d_size is not None:
+            self.list_1d_input_size = self.actual_1d_size
+            logger.info(f"Using actual 1D input size: {self.actual_1d_size}")
+        else:
+            self.list_1d_input_size = len(self.data_info['x_list_columns_1d']) * self.model_config.vector_length
         
-        # 2D input size (total features across all 2D inputs)
-        self.list_2d_input_size = len(self.data_info['x_list_columns_2d']) * self.model_config.matrix_rows * self.model_config.matrix_cols
+        # 2D input size - use actual channels if provided, otherwise calculate from config
+        if self.actual_2d_channels is not None:
+            self.list_2d_input_channels = self.actual_2d_channels
+            logger.info(f"Using actual 2D channels: {self.actual_2d_channels}")
+        else:
+            self.list_2d_input_channels = len(self.data_info['x_list_columns_2d'])
+        
+        # 2D total size
+        self.list_2d_input_size = self.list_2d_input_channels * self.model_config.matrix_rows * self.model_config.matrix_cols
         
         logger.info(f"Input dimensions - LSTM: {self.lstm_input_size}, Static: {self.static_input_size}, "
-                   f"1D: {self.list_1d_input_size}, 2D: {self.list_2d_input_size}")
+                   f"1D: {self.list_1d_input_size}, 2D: {self.list_2d_input_size} (channels: {self.list_2d_input_channels})")
+        
+        # Log the actual data structure for debugging
+        logger.info(f"1D columns: {self.data_info['x_list_columns_1d']}")
+        logger.info(f"2D columns: {self.data_info['x_list_columns_2d']}")
+        logger.info(f"Vector length config: {self.model_config.vector_length}")
     
     def _build_lstm(self):
         """Build LSTM component for time series processing."""
@@ -80,7 +101,12 @@ class CombinedModel(nn.Module):
     
     def _build_static_encoder(self):
         """Build encoder for static features."""
-        self.fc_static = nn.Linear(self.static_input_size, self.model_config.static_fc_size)
+        if self.static_input_size > 0:
+            self.fc_static = nn.Linear(self.static_input_size, self.model_config.static_fc_size)
+        else:
+            # If no static features, create a dummy layer that outputs zeros
+            self.fc_static = None
+            logger.warning("No static features found. Static encoder will output zeros.")
     
     def _build_1d_encoder(self):
         """Build encoder for 1D list features."""
@@ -89,7 +115,7 @@ class CombinedModel(nn.Module):
     def _build_2d_encoder(self):
         """Build CNN encoder for 2D list features."""
         layers = []
-        in_channels = len(self.data_info['x_list_columns_2d'])
+        in_channels = self.list_2d_input_channels
         
         for i, out_channels in enumerate(self.model_config.conv_channels):
             layers.extend([
@@ -172,9 +198,16 @@ class CombinedModel(nn.Module):
         # Calculate fused feature size
         fused_feature_size = self.token_dim * self.model_config.num_tokens
         
-        # Scalar output head
-        self.fc_scalar_branch = nn.Linear(fused_feature_size, 128)
-        self.fc_scalar = nn.Linear(128, self.model_config.scalar_output_size)
+        # Scalar output head (only if scalar_output_size > 0)
+        if self.model_config.scalar_output_size > 0:
+            self.fc_scalar_branch = nn.Linear(fused_feature_size, 128)
+            self.fc_scalar = nn.Linear(128, self.model_config.scalar_output_size)
+            self.log_sigma_scalar = nn.Parameter(torch.zeros(1))
+        else:
+            self.fc_scalar_branch = None
+            self.fc_scalar = None
+            self.log_sigma_scalar = None
+            logger.warning("No scalar outputs configured. Scalar output head will be disabled.")
         
         # Vector output head (1D predictions)
         self.fc_vector_branch = nn.Linear(fused_feature_size, 128)
@@ -188,7 +221,6 @@ class CombinedModel(nn.Module):
         )
         
         # Learnable loss weights
-        self.log_sigma_scalar = nn.Parameter(torch.zeros(1))
         self.log_sigma_vector = nn.Parameter(torch.zeros(1))
         self.log_sigma_matrix = nn.Parameter(torch.zeros(1))
     
@@ -235,12 +267,16 @@ class CombinedModel(nn.Module):
         lstm_out = lstm_out[:, -1, :]  # Take last hidden state
         
         # Process static features
-        static_out = F.relu(self.fc_static(static_data))
+        if self.fc_static is not None:
+            static_out = F.relu(self.fc_static(static_data))
+        else:
+            # Create zero tensor for static features
+            static_out = torch.zeros(batch_size, self.model_config.static_fc_size, device=time_series_data.device)
         
         # Process 1D list features
         list_1d_out = F.relu(self.fc_1d(list_1d_data))
         
-        # Process 2D list features with CNN
+        # Process 2D list features
         list_2d_out = self.conv2d(list_2d_data)
         
         # Combine all features
@@ -259,11 +295,16 @@ class CombinedModel(nn.Module):
         combined_fused = fused_tokens.view(batch_size, -1)
         
         # Generate outputs
-        scalar_features = F.relu(self.fc_scalar_branch(combined_fused))
+        if self.fc_scalar is not None:
+            scalar_features = F.relu(self.fc_scalar_branch(combined_fused))
+            scalar_output = self.fc_scalar(scalar_features)
+        else:
+            # Create dummy scalar output if disabled
+            scalar_output = torch.zeros(batch_size, 1, device=time_series_data.device)
+        
         vector_features = F.relu(self.fc_vector_branch(combined_fused))
         matrix_features = F.relu(self.fc_matrix_branch(combined_fused))
         
-        scalar_output = self.fc_scalar(scalar_features)
         vector_output = F.softplus(self.fc_vector(vector_features)).view(
             batch_size, self.model_config.vector_output_size, self.model_config.vector_length
         )
@@ -276,11 +317,15 @@ class CombinedModel(nn.Module):
     
     def get_loss_weights(self) -> Dict[str, float]:
         """Get current loss weights."""
-        return {
-            'scalar': (1 / (2 * torch.exp(self.log_sigma_scalar)**2)).item(),
-            'vector': (1 / (2 * torch.exp(self.log_sigma_vector)**2)).item(),
-            'matrix': (1 / (2 * torch.exp(self.log_sigma_matrix)**2)).item()
-        }
+        weights = {}
+        
+        if self.log_sigma_scalar is not None:
+            weights['scalar'] = (1 / (2 * torch.exp(self.log_sigma_scalar)**2)).item()
+        
+        weights['vector'] = (1 / (2 * torch.exp(self.log_sigma_vector)**2)).item()
+        weights['matrix'] = (1 / (2 * torch.exp(self.log_sigma_matrix)**2)).item()
+        
+        return weights
     
     def predict(self, time_series_data: torch.Tensor, static_data: torch.Tensor,
                 list_1d_data: torch.Tensor, list_2d_data: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -396,12 +441,16 @@ class FlexibleCombinedModel(CombinedModel):
         lstm_out = lstm_out[:, -1, :]
         
         # Process static features
-        static_out = F.relu(self.fc_static(static_data))
+        if self.fc_static is not None:
+            static_out = F.relu(self.fc_static(static_data))
+        else:
+            # Create zero tensor for static features
+            static_out = torch.zeros(batch_size, self.model_config.static_fc_size, device=time_series_data.device)
         
         # Process 1D list features
         list_1d_out = F.relu(self.fc_1d(list_1d_data))
         
-        # Process 2D list features with CNN
+        # Process 2D list features
         list_2d_out = self.conv2d(list_2d_data)
         
         # Combine all features

@@ -80,7 +80,12 @@ class DataLoader:
         if not input_files:
             raise RuntimeError("No data files found in specified paths")
         
-        logger.info(f"Total files found: {len(input_files)}")
+        # Limit number of files if specified
+        if self.data_config.max_files is not None:
+            input_files = input_files[:self.data_config.max_files]
+            logger.info(f"Limited to {len(input_files)} files for testing")
+        
+        logger.info(f"Total files to load: {len(input_files)}")
         
         # Load all files
         df_list = []
@@ -328,11 +333,26 @@ class DataLoader:
         list_2d_set = set(self.data_config.x_list_columns_2d + self.data_config.y_list_columns_2d)
         target_set = set(self.data_config.y_list_columns_1d + self.data_config.y_list_columns_2d)
         
-        static_columns = list(
+        # Get candidate static columns
+        candidate_static = list(
             all_columns - time_series_set - list_1d_set - list_2d_set - target_set
         )
         
-        logger.info(f"Found {len(static_columns)} static columns")
+        # Filter out columns that actually contain list data
+        static_columns = []
+        for col in candidate_static:
+            if col in self.df.columns:
+                # Check if the column contains list data
+                sample_values = self.df[col].dropna().head(10)
+                if len(sample_values) > 0:
+                    # Check if any value is a list
+                    has_lists = any(isinstance(val, list) for val in sample_values)
+                    if not has_lists:
+                        static_columns.append(col)
+                    else:
+                        logger.warning(f"Column {col} contains list data but was not in list configurations. Skipping from static columns.")
+        
+        logger.info(f"Found {len(static_columns)} static columns: {static_columns}")
         return static_columns
     
     def _get_target_columns(self) -> List[str]:
@@ -374,7 +394,47 @@ class DataLoader:
         """Normalize static data."""
         logger.info("Normalizing static data...")
         
-        static_data = self.df[static_columns].values
+        if not static_columns:
+            logger.warning("No static columns found. Creating empty tensor.")
+            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
+        
+        # Filter out any columns that might contain list data
+        valid_static_columns = []
+        for col in static_columns:
+            if col in self.df.columns:
+                # Double-check that the column doesn't contain list data
+                sample_values = self.df[col].dropna().head(5)
+                if len(sample_values) > 0:
+                    has_lists = any(isinstance(val, list) for val in sample_values)
+                    if not has_lists:
+                        valid_static_columns.append(col)
+                    else:
+                        logger.warning(f"Skipping column {col} from static normalization - contains list data")
+        
+        if not valid_static_columns:
+            logger.warning("No valid static columns found after filtering. Creating empty tensor.")
+            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
+        
+        logger.info(f"Normalizing {len(valid_static_columns)} static columns: {valid_static_columns}")
+        
+        # Extract static data and ensure it's numeric
+        static_data = self.df[valid_static_columns].values
+        
+        # Check for any non-numeric data
+        if not np.issubdtype(static_data.dtype, np.number):
+            logger.warning("Static data contains non-numeric values. Attempting to convert...")
+            try:
+                static_data = static_data.astype(np.float64)
+            except (ValueError, TypeError) as e:
+                logger.error(f"Failed to convert static data to numeric: {e}")
+                # Return empty tensor if conversion fails
+                return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
+        
+        # Handle NaN values
+        if np.isnan(static_data).any():
+            logger.warning("Static data contains NaN values. Filling with 0.")
+            static_data = np.nan_to_num(static_data, nan=0.0)
+        
         scaler = self._get_scaler(self.preprocessing_config.static_normalization)
         static_normalized = scaler.fit_transform(static_data)
         
@@ -384,7 +444,47 @@ class DataLoader:
         """Normalize target data."""
         logger.info("Normalizing target data...")
         
-        target_data = self.df[target_columns].values
+        if not target_columns:
+            logger.warning("No target columns found. Creating empty tensor.")
+            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
+        
+        # Filter out any columns that might contain list data
+        valid_target_columns = []
+        for col in target_columns:
+            if col in self.df.columns:
+                # Check if the column contains list data
+                sample_values = self.df[col].dropna().head(5)
+                if len(sample_values) > 0:
+                    has_lists = any(isinstance(val, list) for val in sample_values)
+                    if not has_lists:
+                        valid_target_columns.append(col)
+                    else:
+                        logger.warning(f"Skipping column {col} from target normalization - contains list data")
+        
+        if not valid_target_columns:
+            logger.warning("No valid target columns found after filtering. Creating empty tensor.")
+            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
+        
+        logger.info(f"Normalizing {len(valid_target_columns)} target columns: {valid_target_columns}")
+        
+        # Extract target data and ensure it's numeric
+        target_data = self.df[valid_target_columns].values
+        
+        # Check for any non-numeric data
+        if not np.issubdtype(target_data.dtype, np.number):
+            logger.warning("Target data contains non-numeric values. Attempting to convert...")
+            try:
+                target_data = target_data.astype(np.float64)
+            except (ValueError, TypeError) as e:
+                logger.error(f"Failed to convert target data to numeric: {e}")
+                # Return empty tensor if conversion fails
+                return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
+        
+        # Handle NaN values
+        if np.isnan(target_data).any():
+            logger.warning("Target data contains NaN values. Filling with 0.")
+            target_data = np.nan_to_num(target_data, nan=0.0)
+        
         scaler = self._get_scaler(self.preprocessing_config.target_normalization)
         target_normalized = scaler.fit_transform(target_data)
         
@@ -533,7 +633,6 @@ class DataLoader:
         """Get information about the loaded data."""
         if self.df is None:
             return {}
-        
         return {
             'total_samples': len(self.df),
             'time_series_columns': self.data_config.time_series_columns,
@@ -543,5 +642,7 @@ class DataLoader:
             'y_list_columns_1d': self.data_config.y_list_columns_1d,
             'x_list_columns_2d': self.data_config.x_list_columns_2d,
             'y_list_columns_2d': self.data_config.y_list_columns_2d,
-            'available_columns': list(self.df.columns)
+            'available_columns': list(self.df.columns),
+            'matrix_rows': self.data_config.max_2d_rows,
+            'matrix_cols': self.data_config.max_2d_cols
         } 
