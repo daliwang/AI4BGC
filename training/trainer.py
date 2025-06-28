@@ -234,10 +234,13 @@ class ModelTrainer:
                     outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
-                    # Extract outputs from dictionary
-                    scalar_pred = outputs['scalar']
-                    vector_pred = outputs['vector']
-                    matrix_pred = outputs['matrix']
+                    # Handle both tuple and dictionary returns
+                    if isinstance(outputs, tuple):
+                        scalar_pred, vector_pred, matrix_pred = outputs
+                    else:
+                        scalar_pred = outputs['scalar']
+                        vector_pred = outputs['vector']
+                        matrix_pred = outputs['matrix']
                     loss = self._compute_loss(
                         scalar_pred, vector_pred, matrix_pred,
                         target, y_list_1d, y_list_2d
@@ -251,10 +254,13 @@ class ModelTrainer:
                 outputs = self.model(
                     time_series, static, list_1d, list_2d
                 )
-                # Extract outputs from dictionary
-                scalar_pred = outputs['scalar']
-                vector_pred = outputs['vector']
-                matrix_pred = outputs['matrix']
+                # Handle both tuple and dictionary returns
+                if isinstance(outputs, tuple):
+                    scalar_pred, vector_pred, matrix_pred = outputs
+                else:
+                    scalar_pred = outputs['scalar']
+                    vector_pred = outputs['vector']
+                    matrix_pred = outputs['matrix']
                 loss = self._compute_loss(
                     scalar_pred, vector_pred, matrix_pred,
                     target, y_list_1d, y_list_2d
@@ -333,10 +339,13 @@ class ModelTrainer:
                         outputs = self.model(
                             time_series, static, list_1d, list_2d
                         )
-                        # Extract outputs from dictionary
-                        scalar_pred = outputs['scalar']
-                        vector_pred = outputs['vector']
-                        matrix_pred = outputs['matrix']
+                        # Handle both tuple and dictionary returns
+                        if isinstance(outputs, tuple):
+                            scalar_pred, vector_pred, matrix_pred = outputs
+                        else:
+                            scalar_pred = outputs['scalar']
+                            vector_pred = outputs['vector']
+                            matrix_pred = outputs['matrix']
                         loss = self._compute_loss(
                             scalar_pred, vector_pred, matrix_pred,
                             target, y_list_1d, y_list_2d
@@ -345,10 +354,13 @@ class ModelTrainer:
                     outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
-                    # Extract outputs from dictionary
-                    scalar_pred = outputs['scalar']
-                    vector_pred = outputs['vector']
-                    matrix_pred = outputs['matrix']
+                    # Handle both tuple and dictionary returns
+                    if isinstance(outputs, tuple):
+                        scalar_pred, vector_pred, matrix_pred = outputs
+                    else:
+                        scalar_pred = outputs['scalar']
+                        vector_pred = outputs['vector']
+                        matrix_pred = outputs['matrix']
                     loss = self._compute_loss(
                         scalar_pred, vector_pred, matrix_pred,
                         target, y_list_1d, y_list_2d
@@ -588,18 +600,24 @@ class ModelTrainer:
                         outputs = self.model(
                             time_series, static, list_1d, list_2d
                         )
-                        # Extract outputs from dictionary
-                        scalar_pred = outputs['scalar']
-                        vector_pred = outputs['vector']
-                        matrix_pred = outputs['matrix']
+                        # Handle both tuple and dictionary returns
+                        if isinstance(outputs, tuple):
+                            scalar_pred, vector_pred, matrix_pred = outputs
+                        else:
+                            scalar_pred = outputs['scalar']
+                            vector_pred = outputs['vector']
+                            matrix_pred = outputs['matrix']
                 else:
                     outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
-                    # Extract outputs from dictionary
-                    scalar_pred = outputs['scalar']
-                    vector_pred = outputs['vector']
-                    matrix_pred = outputs['matrix']
+                    # Handle both tuple and dictionary returns
+                    if isinstance(outputs, tuple):
+                        scalar_pred, vector_pred, matrix_pred = outputs
+                    else:
+                        scalar_pred = outputs['scalar']
+                        vector_pred = outputs['vector']
+                        matrix_pred = outputs['matrix']
                 
                 # Collect predictions and targets
                 all_predictions['scalar'].append(scalar_pred.cpu())
