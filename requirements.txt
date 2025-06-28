@@ -1,0 +1,39 @@
+# AI4BGC Project Requirements
+# Core ML and Deep Learning
+torch>=2.7.0
+torchvision>=0.22.0
+torchaudio>=2.7.0
+
+# Data Processing and Analysis
+pandas>=2.3.0
+numpy>=2.3.0
+scikit-learn>=1.7.0
+
+# Visualization
+matplotlib>=3.10.0
+seaborn>=0.13.0
+
+# Scientific Computing (optional but recommended for climate data)
+scipy>=1.16.0
+xarray>=2025.6.0
+netCDF4>=1.7.0
+
+# Jupyter and Development Tools (optional)
+jupyter>=1.1.0
+ipykernel>=6.29.0
+notebook>=7.4.0
+
+# Utilities
+tqdm>=4.67.0
+psutil>=7.0.0
+
+# For better performance on HPC systems
+mpi4py>=4.1.0
+
+# Additional dependencies used in the project
+joblib>=1.5.0
+optuna>=3.0.0
+
+# GPU monitoring and utilities
+nvidia-ml-py>=12.0.0
+pynvml>=12.0.0 
