@@ -35,6 +35,12 @@ class DataConfig:
         'FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT'
     ])
     
+    # Static columns (can be modified for different inputs)
+    static_columns: List[str] = field(default_factory=lambda: [
+        'lat', 'lon', 'area', 'landfrac', 'PFT0', 'PFT1', 'PFT2', 'PFT3', 'PFT4', 'PFT5',
+        'PFT6', 'PFT7', 'PFT8', 'PFT9', 'PFT10', 'PFT11', 'PFT12', 'PFT13', 'PFT14', 'PFT15'
+    ])
+    
     # 2D input features (can be modified for different inputs)
     x_list_columns_2d: List[str] = field(default_factory=lambda: [
         'soil3c_vr', 'soil4c_vr', 'cwdc_vr'
@@ -165,6 +171,10 @@ class TrainingConfig:
     
     # Validation
     validation_frequency: int = 1  # Validate every N epochs
+    
+    # Fair comparison settings
+    random_seed: int = 42  # Fixed random seed
+    deterministic: bool = True  # Ensure deterministic behavior
     
     def get_device(self) -> torch.device:
         """Get the appropriate device for training."""
@@ -329,4 +339,197 @@ def get_extended_config() -> TrainingConfigManager:
         batch_size=32,
         learning_rate=0.0005
     )
+    return config
+
+
+def get_full_model_test_cpu_config() -> TrainingConfigManager:
+    """Get full model configuration for CPU testing with 3 files."""
+    config = TrainingConfigManager()
+    
+    # Update data config for full model testing with 3 files
+    config.update_data_config(
+        max_files=3,  # Use 3 files for testing
+        train_split=0.8
+    )
+    
+    # Update model config for full model (not minimal)
+    config.update_model_config(
+        lstm_hidden_size=256,
+        static_fc_size=512,
+        num_tokens=16,
+        token_dim=128,
+        transformer_heads=8,
+        transformer_layers=4,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for CPU
+    config.update_training_config(
+        num_epochs=10,
+        batch_size=32,  # Smaller batch size for CPU
+        learning_rate=0.001,
+        weight_decay=1e-5,
+        device='cpu',
+        log_gpu_memory=False,
+        prefetch_factor=None
+    )
+    
+    return config
+
+
+def get_full_model_test_gpu_config() -> TrainingConfigManager:
+    """Get full model configuration for GPU testing with 3 files."""
+    config = TrainingConfigManager()
+    
+    # Update data config for full model testing with 3 files
+    config.update_data_config(
+        max_files=3,  # Use 3 files for testing
+        train_split=0.8
+    )
+    
+    # Update model config for full model (not minimal)
+    config.update_model_config(
+        lstm_hidden_size=256,
+        static_fc_size=512,
+        num_tokens=16,
+        token_dim=128,
+        transformer_heads=8,
+        transformer_layers=4,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for GPU
+    config.update_training_config(
+        num_epochs=10,
+        batch_size=64,  # Larger batch size for GPU
+        learning_rate=0.001,
+        weight_decay=1e-5,
+        device='cuda',
+        log_gpu_memory=True,
+        prefetch_factor=None
+    )
+    
+    return config
+
+
+def get_full_dataset_config() -> TrainingConfigManager:
+    """Get full dataset configuration for production training."""
+    config = TrainingConfigManager()
+    
+    # Update data config for full dataset
+    config.update_data_config(
+        max_files=None,  # Use all available files
+        train_split=0.8
+    )
+    
+    # Update model config for production (larger model)
+    config.update_model_config(
+        lstm_hidden_size=512,
+        static_fc_size=1024,
+        num_tokens=32,
+        token_dim=256,
+        transformer_heads=16,
+        transformer_layers=8,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for production
+    config.update_training_config(
+        num_epochs=50,
+        batch_size=128,
+        learning_rate=0.0005,
+        weight_decay=1e-4,
+        device='cuda',
+        log_gpu_memory=True,
+        prefetch_factor=None
+    )
+    
+    return config
+
+
+def get_fair_comparison_cpu_config() -> TrainingConfigManager:
+    """Get CPU configuration for fair comparison with fixed random seeds and no mixed precision."""
+    config = TrainingConfigManager()
+    
+    # Update data config for fair comparison with 3 files
+    config.update_data_config(
+        max_files=3,  # Use 3 files for testing
+        train_split=0.8
+    )
+    
+    # Update model config for fair comparison
+    config.update_model_config(
+        lstm_hidden_size=256,
+        static_fc_size=512,
+        num_tokens=16,
+        token_dim=128,
+        transformer_heads=8,
+        transformer_layers=4,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for fair CPU comparison
+    config.update_training_config(
+        num_epochs=10,
+        batch_size=32,  # Smaller batch size for CPU
+        learning_rate=0.001,
+        weight_decay=1e-5,
+        device='cpu',
+        log_gpu_memory=False,
+        prefetch_factor=None,
+        # Fair comparison settings
+        random_seed=42,  # Fixed random seed
+        use_amp=False,   # No mixed precision
+        deterministic=True  # Ensure deterministic behavior
+    )
+    
+    return config
+
+
+def get_fair_comparison_gpu_config() -> TrainingConfigManager:
+    """Get GPU configuration for fair comparison with fixed random seeds and no mixed precision."""
+    config = TrainingConfigManager()
+    
+    # Update data config for fair comparison with 3 files
+    config.update_data_config(
+        max_files=3,  # Use 3 files for testing
+        train_split=0.8
+    )
+    
+    # Update model config for fair comparison
+    config.update_model_config(
+        lstm_hidden_size=256,
+        static_fc_size=512,
+        num_tokens=16,
+        token_dim=128,
+        transformer_heads=8,
+        transformer_layers=4,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for fair GPU comparison
+    config.update_training_config(
+        num_epochs=10,
+        batch_size=32,  # Same batch size as CPU for fair comparison
+        learning_rate=0.001,
+        weight_decay=1e-5,
+        device='cuda',
+        log_gpu_memory=True,
+        prefetch_factor=None,
+        # Fair comparison settings
+        random_seed=42,  # Same random seed as CPU
+        use_amp=False,   # No mixed precision for fair comparison
+        deterministic=True  # Ensure deterministic behavior
+    )
+    
     return config 

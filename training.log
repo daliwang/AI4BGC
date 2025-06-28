@@ -3704,3 +3704,129 @@ Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
 2025-06-28 08:24:16,459 - training.trainer - INFO - Metrics saved to predictions/test_metrics.csv
 2025-06-28 08:24:16,459 - __main__ - INFO - Training completed successfully!
 2025-06-28 08:24:16,459 - __main__ - INFO - Final metrics: {'scalar_rmse': np.float64(0.2737916560246809), 'scalar_mse': 0.07496187090873718, 'vector_rmse': np.float64(0.4350342577839946), 'vector_mse': 0.18925480544567108, 'matrix_rmse': np.float64(0.5985847441399835), 'matrix_mse': 0.3583036959171295}
+2025-06-28 09:01:47,467 - __main__ - INFO - Starting training with configuration: full_model_test
+2025-06-28 09:01:47,486 - __main__ - INFO - Initializing data loader...
+2025-06-28 09:01:47,486 - __main__ - INFO - Loading and preprocessing data...
+2025-06-28 09:01:47,486 - data.data_loader - INFO - Loading data from multiple paths...
+2025-06-28 09:01:47,506 - data.data_loader - INFO - Found 21 files in /global/cfs/cdirs/m4814/daweigao/0_trendy_case/dataset
+2025-06-28 09:01:47,539 - data.data_loader - INFO - Found 63 files in /global/cfs/cdirs/m4814/daweigao/1_0.5_degree/dataset
+2025-06-28 09:01:47,539 - data.data_loader - INFO - Limited to 3 files for testing
+2025-06-28 09:01:47,539 - data.data_loader - INFO - Total files to load: 3
+2025-06-28 09:01:54,655 - data.data_loader - INFO - Successfully loaded 3000 samples
+2025-06-28 09:01:54,655 - data.data_loader - INFO - Starting data preprocessing...
+2025-06-28 09:01:54,657 - data.data_loader - INFO - Dropped columns: ['Y_OCCLUDED_P', 'Y_SECONDARY_P', 'Y_LABILE_P', 'Y_APATITE_P']
+2025-06-28 09:01:54,659 - data.data_loader - INFO - Filtered data: 3000 -> 168 samples
+2025-06-28 09:01:54,659 - data.data_loader - INFO - Processing time series data...
+2025-06-28 09:01:54,687 - data.data_loader - INFO - Processing list columns...
+2025-06-28 09:01:54,719 - data.data_loader - INFO - Shuffling dataset...
+2025-06-28 09:01:54,722 - data.data_loader - INFO - Data preprocessing completed
+2025-06-28 09:01:55,098 - data.data_loader - INFO - Found 78 static columns: ['PCT_CLAY_2', 'APATITE_P', 'SCALARAVG_vr_7', 'PCT_NAT_PFT_16', 'LABILE_P', 'SCALARAVG_vr_10', 'SCALARAVG_vr_0', 'Y_HR', 'SOIL_COLOR', 'PCT_NAT_PFT_13', 'PCT_CLAY_9', 'PCT_CLAY_6', 'LANDFRAC_PFT', 'PCT_SAND_3', 'PCT_NAT_PFT_14', 'HR', 'PCT_CLAY_0', 'Y_NPP', 'AREA', 'PCT_NAT_PFT_10', 'PCT_NAT_PFT_2', 'landfrac', 'PCT_NAT_PFT_1', 'Y_GPP', 'PCT_CLAY_1', 'H2OSOI_10CM', 'SECONDARY_P', 'SCALARAVG_vr_14', 'SCALARAVG_vr_1', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_15', 'PCT_CLAY_8', 'SOIL_ORDER', 'peatf', 'Latitude', 'Y_COL_FIRE_CLOSS', 'SNOWDP', 'PCT_NAT_PFT_12', 'PCT_SAND_5', 'PCT_CLAY_5', 'SCALARAVG_vr_6', 'PCT_NAT_PFT_4', 'PCT_SAND_0', 'SCALARAVG_vr_11', 'PCT_NAT_PFT_0', 'SCALARAVG_vr_4', 'abm', 'Longitude', 'PCT_SAND_1', 'SCALARAVG_vr_9', 'SCALARAVG_vr_13', 'PCT_NAT_PFT_7', 'PCT_SAND_7', 'PCT_SAND_4', 'PCT_CLAY_4', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 'OCCLUDED_P', 'PCT_NAT_PFT_5', 'SCALARAVG_vr_8', 'PCT_CLAY_3', 'PCT_SAND_8', 'COL_FIRE_CLOSS', 'NPP', 'PCT_NATVEG', 'PCT_SAND_9', 'SCALARAVG_vr_12', 'PCT_NAT_PFT_11', 'PCT_CLAY_7', 'AR', 'SCALARAVG_vr_3', 'SCALARAVG_vr_5', 'Y_AR', 'SCALARAVG_vr_2', 'PCT_SAND_2', 'PCT_NAT_PFT_6', 'PCT_SAND_6', 'GPP']
+2025-06-28 09:01:55,099 - data.data_loader - INFO - Found 5 target columns
+2025-06-28 09:01:55,099 - __main__ - INFO - Data info: {'total_samples': 168, 'time_series_columns': ['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT'], 'static_columns': ['PCT_CLAY_2', 'APATITE_P', 'SCALARAVG_vr_7', 'PCT_NAT_PFT_16', 'LABILE_P', 'SCALARAVG_vr_10', 'SCALARAVG_vr_0', 'Y_HR', 'SOIL_COLOR', 'PCT_NAT_PFT_13', 'PCT_CLAY_9', 'PCT_CLAY_6', 'LANDFRAC_PFT', 'PCT_SAND_3', 'PCT_NAT_PFT_14', 'HR', 'PCT_CLAY_0', 'Y_NPP', 'AREA', 'PCT_NAT_PFT_10', 'PCT_NAT_PFT_2', 'landfrac', 'PCT_NAT_PFT_1', 'Y_GPP', 'PCT_CLAY_1', 'H2OSOI_10CM', 'SECONDARY_P', 'SCALARAVG_vr_14', 'SCALARAVG_vr_1', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_15', 'PCT_CLAY_8', 'SOIL_ORDER', 'peatf', 'Latitude', 'Y_COL_FIRE_CLOSS', 'SNOWDP', 'PCT_NAT_PFT_12', 'PCT_SAND_5', 'PCT_CLAY_5', 'SCALARAVG_vr_6', 'PCT_NAT_PFT_4', 'PCT_SAND_0', 'SCALARAVG_vr_11', 'PCT_NAT_PFT_0', 'SCALARAVG_vr_4', 'abm', 'Longitude', 'PCT_SAND_1', 'SCALARAVG_vr_9', 'SCALARAVG_vr_13', 'PCT_NAT_PFT_7', 'PCT_SAND_7', 'PCT_SAND_4', 'PCT_CLAY_4', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 'OCCLUDED_P', 'PCT_NAT_PFT_5', 'SCALARAVG_vr_8', 'PCT_CLAY_3', 'PCT_SAND_8', 'COL_FIRE_CLOSS', 'NPP', 'PCT_NATVEG', 'PCT_SAND_9', 'SCALARAVG_vr_12', 'PCT_NAT_PFT_11', 'PCT_CLAY_7', 'AR', 'SCALARAVG_vr_3', 'SCALARAVG_vr_5', 'Y_AR', 'SCALARAVG_vr_2', 'PCT_SAND_2', 'PCT_NAT_PFT_6', 'PCT_SAND_6', 'GPP'], 'target_columns': ['Y_HR', 'Y_NPP', 'Y_COL_FIRE_CLOSS', 'Y_GPP', 'Y_AR'], 'x_list_columns_1d': ['deadcrootc', 'deadstemc', 'tlai'], 'y_list_columns_1d': ['Y_deadcrootc', 'Y_deadstemc', 'Y_tlai'], 'x_list_columns_2d': ['soil3c_vr', 'soil4c_vr', 'cwdc_vr'], 'y_list_columns_2d': ['Y_soil3c_vr', 'Y_soil4c_vr', 'Y_cwdc_vr'], 'available_columns': ['landfrac', 'Latitude', 'Longitude', 'FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT', 'LANDFRAC_PFT', 'PCT_NATVEG', 'AREA', 'peatf', 'abm', 'SOIL_COLOR', 'SOIL_ORDER', 'soil3c_vr', 'soil4c_vr', 'cwdc_vr', 'deadcrootc', 'deadstemc', 'tlai', 'GPP', 'SNOWDP', 'H2OSOI_10CM', 'HR', 'AR', 'NPP', 'COL_FIRE_CLOSS', 'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P', 'PCT_NAT_PFT_0', 'PCT_NAT_PFT_1', 'PCT_NAT_PFT_2', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_4', 'PCT_NAT_PFT_5', 'PCT_NAT_PFT_6', 'PCT_NAT_PFT_7', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 'PCT_NAT_PFT_10', 'PCT_NAT_PFT_11', 'PCT_NAT_PFT_12', 'PCT_NAT_PFT_13', 'PCT_NAT_PFT_14', 'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_SAND_0', 'PCT_SAND_1', 'PCT_SAND_2', 'PCT_SAND_3', 'PCT_SAND_4', 'PCT_SAND_5', 'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8', 'PCT_SAND_9', 'SCALARAVG_vr_0', 'SCALARAVG_vr_1', 'SCALARAVG_vr_2', 'SCALARAVG_vr_3', 'SCALARAVG_vr_4', 'SCALARAVG_vr_5', 'SCALARAVG_vr_6', 'SCALARAVG_vr_7', 'SCALARAVG_vr_8', 'SCALARAVG_vr_9', 'SCALARAVG_vr_10', 'SCALARAVG_vr_11', 'SCALARAVG_vr_12', 'SCALARAVG_vr_13', 'SCALARAVG_vr_14', 'PCT_CLAY_0', 'PCT_CLAY_1', 'PCT_CLAY_2', 'PCT_CLAY_3', 'PCT_CLAY_4', 'PCT_CLAY_5', 'PCT_CLAY_6', 'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9', 'Y_soil3c_vr', 'Y_soil4c_vr', 'Y_cwdc_vr', 'Y_deadcrootc', 'Y_deadstemc', 'Y_tlai', 'Y_GPP', 'Y_HR', 'Y_AR', 'Y_NPP', 'Y_COL_FIRE_CLOSS'], 'matrix_rows': 18, 'matrix_cols': 10}
+2025-06-28 09:01:55,099 - __main__ - INFO - Normalizing data...
+2025-06-28 09:01:55,099 - data.data_loader - INFO - Normalizing data...
+2025-06-28 09:01:55,104 - data.data_loader - INFO - Found 78 static columns: ['PCT_CLAY_2', 'APATITE_P', 'SCALARAVG_vr_7', 'PCT_NAT_PFT_16', 'LABILE_P', 'SCALARAVG_vr_10', 'SCALARAVG_vr_0', 'Y_HR', 'SOIL_COLOR', 'PCT_NAT_PFT_13', 'PCT_CLAY_9', 'PCT_CLAY_6', 'LANDFRAC_PFT', 'PCT_SAND_3', 'PCT_NAT_PFT_14', 'HR', 'PCT_CLAY_0', 'Y_NPP', 'AREA', 'PCT_NAT_PFT_10', 'PCT_NAT_PFT_2', 'landfrac', 'PCT_NAT_PFT_1', 'Y_GPP', 'PCT_CLAY_1', 'H2OSOI_10CM', 'SECONDARY_P', 'SCALARAVG_vr_14', 'SCALARAVG_vr_1', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_15', 'PCT_CLAY_8', 'SOIL_ORDER', 'peatf', 'Latitude', 'Y_COL_FIRE_CLOSS', 'SNOWDP', 'PCT_NAT_PFT_12', 'PCT_SAND_5', 'PCT_CLAY_5', 'SCALARAVG_vr_6', 'PCT_NAT_PFT_4', 'PCT_SAND_0', 'SCALARAVG_vr_11', 'PCT_NAT_PFT_0', 'SCALARAVG_vr_4', 'abm', 'Longitude', 'PCT_SAND_1', 'SCALARAVG_vr_9', 'SCALARAVG_vr_13', 'PCT_NAT_PFT_7', 'PCT_SAND_7', 'PCT_SAND_4', 'PCT_CLAY_4', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 'OCCLUDED_P', 'PCT_NAT_PFT_5', 'SCALARAVG_vr_8', 'PCT_CLAY_3', 'PCT_SAND_8', 'COL_FIRE_CLOSS', 'NPP', 'PCT_NATVEG', 'PCT_SAND_9', 'SCALARAVG_vr_12', 'PCT_NAT_PFT_11', 'PCT_CLAY_7', 'AR', 'SCALARAVG_vr_3', 'SCALARAVG_vr_5', 'Y_AR', 'SCALARAVG_vr_2', 'PCT_SAND_2', 'PCT_NAT_PFT_6', 'PCT_SAND_6', 'GPP']
+2025-06-28 09:01:55,105 - data.data_loader - INFO - Found 5 target columns
+2025-06-28 09:01:55,105 - data.data_loader - INFO - Normalizing time series data...
+2025-06-28 09:01:55,136 - data.data_loader - INFO - Normalizing static data...
+2025-06-28 09:01:55,142 - data.data_loader - INFO - Normalizing 78 static columns: ['PCT_CLAY_2', 'APATITE_P', 'SCALARAVG_vr_7', 'PCT_NAT_PFT_16', 'LABILE_P', 'SCALARAVG_vr_10', 'SCALARAVG_vr_0', 'Y_HR', 'SOIL_COLOR', 'PCT_NAT_PFT_13', 'PCT_CLAY_9', 'PCT_CLAY_6', 'LANDFRAC_PFT', 'PCT_SAND_3', 'PCT_NAT_PFT_14', 'HR', 'PCT_CLAY_0', 'Y_NPP', 'AREA', 'PCT_NAT_PFT_10', 'PCT_NAT_PFT_2', 'landfrac', 'PCT_NAT_PFT_1', 'Y_GPP', 'PCT_CLAY_1', 'H2OSOI_10CM', 'SECONDARY_P', 'SCALARAVG_vr_14', 'SCALARAVG_vr_1', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_15', 'PCT_CLAY_8', 'SOIL_ORDER', 'peatf', 'Latitude', 'Y_COL_FIRE_CLOSS', 'SNOWDP', 'PCT_NAT_PFT_12', 'PCT_SAND_5', 'PCT_CLAY_5', 'SCALARAVG_vr_6', 'PCT_NAT_PFT_4', 'PCT_SAND_0', 'SCALARAVG_vr_11', 'PCT_NAT_PFT_0', 'SCALARAVG_vr_4', 'abm', 'Longitude', 'PCT_SAND_1', 'SCALARAVG_vr_9', 'SCALARAVG_vr_13', 'PCT_NAT_PFT_7', 'PCT_SAND_7', 'PCT_SAND_4', 'PCT_CLAY_4', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 'OCCLUDED_P', 'PCT_NAT_PFT_5', 'SCALARAVG_vr_8', 'PCT_CLAY_3', 'PCT_SAND_8', 'COL_FIRE_CLOSS', 'NPP', 'PCT_NATVEG', 'PCT_SAND_9', 'SCALARAVG_vr_12', 'PCT_NAT_PFT_11', 'PCT_CLAY_7', 'AR', 'SCALARAVG_vr_3', 'SCALARAVG_vr_5', 'Y_AR', 'SCALARAVG_vr_2', 'PCT_SAND_2', 'PCT_NAT_PFT_6', 'PCT_SAND_6', 'GPP']
+2025-06-28 09:01:55,162 - data.data_loader - INFO - Normalizing target data...
+2025-06-28 09:01:55,162 - data.data_loader - INFO - Normalizing 5 target columns: ['Y_HR', 'Y_NPP', 'Y_COL_FIRE_CLOSS', 'Y_GPP', 'Y_AR']
+2025-06-28 09:01:55,163 - data.data_loader - INFO - Normalizing 1D list data...
+2025-06-28 09:01:55,167 - data.data_loader - INFO - Normalizing 2D list data...
+2025-06-28 09:01:55,170 - __main__ - INFO - Splitting data...
+2025-06-28 09:01:55,170 - data.data_loader - INFO - Splitting data into train/test sets...
+2025-06-28 09:01:55,170 - __main__ - INFO - Creating model...
+2025-06-28 09:01:55,171 - __main__ - INFO - Detected actual 1D input size: 48
+2025-06-28 09:01:55,171 - __main__ - INFO - Detected actual 2D channels: 3
+2025-06-28 09:01:55,171 - models.combined_model - INFO - Using actual 1D input size: 48
+2025-06-28 09:01:55,171 - models.combined_model - INFO - Using actual 2D channels: 3
+2025-06-28 09:01:55,171 - models.combined_model - INFO - Input dimensions - LSTM: 6, Static: 78, 1D: 48, 2D: 540 (channels: 3)
+2025-06-28 09:01:55,171 - models.combined_model - INFO - 1D columns: ['deadcrootc', 'deadstemc', 'tlai']
+2025-06-28 09:01:55,171 - models.combined_model - INFO - 2D columns: ['soil3c_vr', 'soil4c_vr', 'cwdc_vr']
+2025-06-28 09:01:55,171 - models.combined_model - INFO - Vector length config: 16
+2025-06-28 09:01:55,321 - models.combined_model - INFO - Model initialized with 2283156 parameters
+2025-06-28 09:01:55,321 - __main__ - INFO - Initializing trainer...
+2025-06-28 09:01:55,900 - training.trainer - INFO - Automatic Mixed Precision (AMP) enabled
+2025-06-28 09:02:06,178 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:06,179 - utils.gpu_monitor - INFO - Initial GPU: NVIDIA A100-PCIE-40GB | Memory: 0.01GB/39.38GB (0.0%) | Util: 0.0%
+2025-06-28 09:02:06,179 - training.trainer - INFO - Trainer initialized on device: cuda
+2025-06-28 09:02:06,179 - __main__ - INFO - Starting training pipeline...
+2025-06-28 09:02:06,179 - training.trainer - INFO - Starting training pipeline...
+2025-06-28 09:02:06,179 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:06,179 - utils.gpu_monitor - INFO - Training start - GPU: NVIDIA A100-PCIE-40GB | Memory: 0.01GB/39.38GB (0.0%) | Util: 0.0%
+2025-06-28 09:02:06,179 - training.trainer - INFO - Starting training for 10 epochs...
+2025-06-28 09:02:07,714 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,714 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.03GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:07,715 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,775 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,846 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,869 - training.trainer - INFO - Epoch [1/10] - Train Loss: 3.8656, Val Loss: 3.7436, Time: 1.69s
+2025-06-28 09:02:07,869 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,870 - utils.gpu_monitor - INFO - Epoch 1 - GPU: NVIDIA A100-PCIE-40GB | Memory: 0.03GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:07,906 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,906 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.03GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:07,906 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,970 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:07,993 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,003 - training.trainer - INFO - Epoch [2/10] - Train Loss: 4.1944, Val Loss: 5.6416, Time: 0.13s
+2025-06-28 09:02:08,025 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,025 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,026 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,077 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,098 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,108 - training.trainer - INFO - Epoch [3/10] - Train Loss: 3.7456, Val Loss: 0.8403, Time: 0.10s
+2025-06-28 09:02:08,136 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,136 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,136 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,161 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,181 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,197 - training.trainer - INFO - Epoch [4/10] - Train Loss: 0.8746, Val Loss: 0.6416, Time: 0.09s
+2025-06-28 09:02:08,225 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,225 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,225 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,251 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,271 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,281 - training.trainer - INFO - Epoch [5/10] - Train Loss: 0.4573, Val Loss: 0.2813, Time: 0.08s
+2025-06-28 09:02:08,303 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,303 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,303 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,329 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,348 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,362 - training.trainer - INFO - Epoch [6/10] - Train Loss: 0.3284, Val Loss: 0.1247, Time: 0.08s
+2025-06-28 09:02:08,362 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,362 - utils.gpu_monitor - INFO - Epoch 6 - GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,392 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,392 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,393 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,417 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,439 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,452 - training.trainer - INFO - Epoch [7/10] - Train Loss: 0.1111, Val Loss: 0.0771, Time: 0.09s
+2025-06-28 09:02:08,508 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,508 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,508 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,540 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,562 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,570 - training.trainer - INFO - Epoch [8/10] - Train Loss: 0.1259, Val Loss: 0.0689, Time: 0.12s
+2025-06-28 09:02:08,594 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,594 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,594 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,616 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,639 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,649 - training.trainer - INFO - Epoch [9/10] - Train Loss: 0.0735, Val Loss: 0.0521, Time: 0.08s
+2025-06-28 09:02:08,671 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,671 - utils.gpu_monitor - INFO - Batch 0 GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,672 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,710 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,733 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,742 - training.trainer - INFO - Epoch [10/10] - Train Loss: 0.0885, Val Loss: 0.0209, Time: 0.09s
+2025-06-28 09:02:08,820 - training.trainer - INFO - Training completed
+2025-06-28 09:02:08,820 - utils.gpu_monitor - WARNING - Failed to get GPU utilization: 'NoneType' object cannot be interpreted as an integer
+2025-06-28 09:02:08,820 - utils.gpu_monitor - INFO - Training end - GPU: NVIDIA A100-PCIE-40GB | Memory: 0.05GB/39.38GB (0.1%) | Util: 0.0%
+2025-06-28 09:02:08,820 - training.trainer - INFO - Evaluating model on test data...
+2025-06-28 09:02:08,879 - training.trainer - INFO - Losses saved to training_validation_losses.csv
+2025-06-28 09:02:09,004 - training.trainer - INFO - All predictions saved successfully
+2025-06-28 09:02:09,041 - training.trainer - INFO - Model saved to predictions/model.pth
+2025-06-28 09:02:09,067 - training.trainer - INFO - Metrics saved to predictions/test_metrics.csv
+2025-06-28 09:02:09,067 - __main__ - INFO - Training completed successfully!
+2025-06-28 09:02:09,067 - __main__ - INFO - Final metrics: {'scalar_rmse': np.float64(0.14344533660981545), 'scalar_mse': 0.020576564595103264, 'vector_rmse': np.float64(0.009728951062139111), 'vector_mse': 9.465248876949772e-05, 'matrix_rmse': np.float64(0.014004012926113025), 'matrix_mse': 0.00019611237803474069}

@@ -59,6 +59,20 @@ class ModelTrainer:
         self.scalers = scalers
         self.data_info = data_info
         
+        # Set random seeds for reproducibility
+        if hasattr(self.config, 'random_seed'):
+            torch.manual_seed(self.config.random_seed)
+            torch.cuda.manual_seed(self.config.random_seed)
+            torch.cuda.manual_seed_all(self.config.random_seed)
+            np.random.seed(self.config.random_seed)
+            logger.info(f"Random seed set to {self.config.random_seed}")
+        
+        # Set deterministic behavior if requested
+        if hasattr(self.config, 'deterministic') and self.config.deterministic:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            logger.info("Deterministic behavior enabled")
+        
         # Ensure all arrays in train/test splits have the same number of samples
         for split_name in ['train', 'test']:
             split = getattr(self, f'{split_name}_data')
@@ -90,6 +104,7 @@ class ModelTrainer:
             logger.info("Automatic Mixed Precision (AMP) enabled")
         else:
             self.scaler = None
+            logger.info("Mixed precision disabled for fair comparison")
         
         # Setup optimizer
         self.optimizer = optim.AdamW(
@@ -216,9 +231,13 @@ class ModelTrainer:
             # Forward pass with mixed precision
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
-                    scalar_pred, vector_pred, matrix_pred = self.model(
+                    outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
+                    # Extract outputs from dictionary
+                    scalar_pred = outputs['scalar']
+                    vector_pred = outputs['vector']
+                    matrix_pred = outputs['matrix']
                     loss = self._compute_loss(
                         scalar_pred, vector_pred, matrix_pred,
                         target, y_list_1d, y_list_2d
@@ -229,9 +248,13 @@ class ModelTrainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                scalar_pred, vector_pred, matrix_pred = self.model(
+                outputs = self.model(
                     time_series, static, list_1d, list_2d
                 )
+                # Extract outputs from dictionary
+                scalar_pred = outputs['scalar']
+                vector_pred = outputs['vector']
+                matrix_pred = outputs['matrix']
                 loss = self._compute_loss(
                     scalar_pred, vector_pred, matrix_pred,
                     target, y_list_1d, y_list_2d
@@ -307,17 +330,25 @@ class ModelTrainer:
                 # Forward pass with mixed precision
                 if self.use_amp:
                     with torch.amp.autocast('cuda'):
-                        scalar_pred, vector_pred, matrix_pred = self.model(
+                        outputs = self.model(
                             time_series, static, list_1d, list_2d
                         )
+                        # Extract outputs from dictionary
+                        scalar_pred = outputs['scalar']
+                        vector_pred = outputs['vector']
+                        matrix_pred = outputs['matrix']
                         loss = self._compute_loss(
                             scalar_pred, vector_pred, matrix_pred,
                             target, y_list_1d, y_list_2d
                         )
                 else:
-                    scalar_pred, vector_pred, matrix_pred = self.model(
+                    outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
+                    # Extract outputs from dictionary
+                    scalar_pred = outputs['scalar']
+                    vector_pred = outputs['vector']
+                    matrix_pred = outputs['matrix']
                     loss = self._compute_loss(
                         scalar_pred, vector_pred, matrix_pred,
                         target, y_list_1d, y_list_2d
@@ -554,13 +585,21 @@ class ModelTrainer:
                 # Forward pass with mixed precision
                 if self.use_amp:
                     with torch.amp.autocast('cuda'):
-                        scalar_pred, vector_pred, matrix_pred = self.model(
+                        outputs = self.model(
                             time_series, static, list_1d, list_2d
                         )
+                        # Extract outputs from dictionary
+                        scalar_pred = outputs['scalar']
+                        vector_pred = outputs['vector']
+                        matrix_pred = outputs['matrix']
                 else:
-                    scalar_pred, vector_pred, matrix_pred = self.model(
+                    outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
+                    # Extract outputs from dictionary
+                    scalar_pred = outputs['scalar']
+                    vector_pred = outputs['vector']
+                    matrix_pred = outputs['matrix']
                 
                 # Collect predictions and targets
                 all_predictions['scalar'].append(scalar_pred.cpu())

@@ -26,7 +26,8 @@ sys.path.append(str(Path(__file__).parent))
 
 from config.training_config import (
     get_default_config, get_minimal_config, get_extended_config,
-    TrainingConfigManager
+    get_full_model_test_cpu_config, get_full_model_test_gpu_config, 
+    get_full_dataset_config, TrainingConfigManager
 )
 from data.data_loader import DataLoader
 from models.combined_model import CombinedModel, FlexibleCombinedModel
@@ -55,16 +56,20 @@ def get_config(config_name: str) -> TrainingConfigManager:
     Returns:
         TrainingConfigManager with the specified configuration
     """
-    config_map = {
-        'default': get_default_config,
-        'minimal': get_minimal_config,
-        'extended': get_extended_config
-    }
-    
-    if config_name not in config_map:
-        raise ValueError(f"Unknown config name: {config_name}. Available: {list(config_map.keys())}")
-    
-    return config_map[config_name]()
+    if config_name == 'default':
+        return get_default_config()
+    elif config_name == 'minimal':
+        return get_minimal_config()
+    elif config_name == 'extended':
+        return get_extended_config()
+    elif config_name == 'full_model_test_cpu':
+        return get_full_model_test_cpu_config()
+    elif config_name == 'full_model_test_gpu':
+        return get_full_model_test_gpu_config()
+    elif config_name == 'full_dataset':
+        return get_full_dataset_config()
+    else:
+        raise ValueError(f"Unknown configuration: {config_name}")
 
 
 def create_custom_config() -> TrainingConfigManager:
@@ -116,7 +121,7 @@ def main():
         'config_name', 
         nargs='?', 
         default='default',
-        choices=['default', 'minimal', 'extended', 'custom'],
+        choices=['default', 'minimal', 'extended', 'custom', 'full_model_test_cpu', 'full_model_test_gpu', 'full_dataset'],
         help='Configuration to use for training'
     )
     parser.add_argument(
