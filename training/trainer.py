@@ -142,11 +142,53 @@ class ModelTrainer:
         self.train_data['list_2d_tensor'] = self._concat_list_columns_2d(self.train_data['list_2d'], self.data_info['x_list_columns_2d'])
         self.test_data['list_2d_tensor'] = self._concat_list_columns_2d(self.test_data['list_2d'], self.data_info['x_list_columns_2d'])
         
+        # Ensure all tensors have the same batch size for TensorDataset
+        self._ensure_consistent_batch_sizes()
+        
         # Log initial GPU stats
         if self.config.log_gpu_memory:
             self.gpu_monitor.log_gpu_stats("Initial ")
         
         logger.info(f"Trainer initialized on device: {self.device}")
+    
+    def _ensure_consistent_batch_sizes(self):
+        """Ensure all tensors have the same batch size for both train and test data."""
+        for split_name in ['train', 'test']:
+            split_data = getattr(self, f'{split_name}_data')
+            
+            # Get all tensor keys
+            tensor_keys = ['time_series', 'static', 'target', 'list_1d_tensor', 'list_2d_tensor', 'y_list_1d', 'y_list_2d']
+            
+            # Find the minimum batch size among all tensors
+            batch_sizes = []
+            for key in tensor_keys:
+                if key in split_data and isinstance(split_data[key], torch.Tensor):
+                    batch_sizes.append(split_data[key].shape[0])
+            
+            if not batch_sizes:
+                logger.warning(f"No tensors found in {split_name} data")
+                continue
+                
+            min_batch_size = min(batch_sizes)
+            logger.info(f"{split_name} data - minimum batch size: {min_batch_size}")
+            
+            # Truncate all tensors to the minimum batch size
+            for key in tensor_keys:
+                if key in split_data and isinstance(split_data[key], torch.Tensor):
+                    current_size = split_data[key].shape[0]
+                    if current_size != min_batch_size:
+                        logger.info(f"Truncating {key} from {current_size} to {min_batch_size}")
+                        split_data[key] = split_data[key][:min_batch_size]
+            
+            # Also handle list_1d and list_2d dictionaries
+            for list_key in ['list_1d', 'list_2d']:
+                if list_key in split_data and isinstance(split_data[list_key], dict):
+                    for col_key, tensor in split_data[list_key].items():
+                        if isinstance(tensor, torch.Tensor):
+                            current_size = tensor.shape[0]
+                            if current_size != min_batch_size:
+                                logger.info(f"Truncating {list_key}[{col_key}] from {current_size} to {min_batch_size}")
+                                split_data[list_key][col_key] = tensor[:min_batch_size]
     
     def _move_data_to_device(self):
         """Move all data to the specified device."""
@@ -191,6 +233,26 @@ class ModelTrainer:
         self.model.train()
         total_loss = 0.0
         num_batches = 0
+        
+        # Debug: Check tensor sizes before creating TensorDataset
+        tensors_to_check = [
+            self.train_data['time_series'],
+            self.train_data['static'],
+            self.train_data['target'],
+            self.train_data['list_1d_tensor'],
+            self.train_data['list_2d_tensor'],
+            self.train_data['y_list_1d'],
+            self.train_data['y_list_2d']
+        ]
+        
+        tensor_names = ['time_series', 'static', 'target', 'list_1d_tensor', 'list_2d_tensor', 'y_list_1d', 'y_list_2d']
+        batch_sizes = [t.shape[0] for t in tensors_to_check]
+        
+        logger.info(f"Training tensor batch sizes: {dict(zip(tensor_names, batch_sizes))}")
+        
+        if len(set(batch_sizes)) > 1:
+            logger.error(f"Tensor batch sizes are inconsistent: {dict(zip(tensor_names, batch_sizes))}")
+            raise ValueError(f"Tensor batch sizes must be consistent. Found: {dict(zip(tensor_names, batch_sizes))}")
         
         # Create data loader with GPU optimizations
         train_dataset = TensorDataset(
@@ -299,6 +361,31 @@ class ModelTrainer:
         total_loss = 0.0
         num_batches = 0
         
+        # Debug: Check tensor sizes before creating TensorDataset
+        tensors_to_check = [
+            self.test_data['time_series'],
+            self.test_data['static'],
+            self.test_data['target'],
+            self.test_data['list_1d_tensor'],
+            self.test_data['list_2d_tensor'],
+            self.test_data['y_list_1d'],
+            self.test_data['y_list_2d']
+        ]
+        
+        tensor_names = ['time_series', 'static', 'target', 'list_1d_tensor', 'list_2d_tensor', 'y_list_1d', 'y_list_2d']
+        batch_sizes = [t.shape[0] for t in tensors_to_check]
+        
+        logger.info(f"Validation tensor batch sizes: {dict(zip(tensor_names, batch_sizes))}")
+        
+        # Check if we have any validation data
+        if all(size == 0 for size in batch_sizes):
+            logger.warning("No validation data available. Skipping validation.")
+            return float('inf')  # Return infinity to indicate no validation
+        
+        if len(set(batch_sizes)) > 1:
+            logger.error(f"Validation tensor batch sizes are inconsistent: {dict(zip(tensor_names, batch_sizes))}")
+            raise ValueError(f"Validation tensor batch sizes must be consistent. Found: {dict(zip(tensor_names, batch_sizes))}")
+        
         # Create data loader with GPU optimizations
         val_dataset = TensorDataset(
             self.test_data['time_series'],
@@ -374,6 +461,11 @@ class ModelTrainer:
                     'loss': f'{loss.item():.4f}',
                     'avg_loss': f'{total_loss/num_batches:.4f}'
                 })
+        
+        # Handle the case where no batches were processed
+        if num_batches == 0:
+            logger.warning("No validation batches processed. Returning infinity.")
+            return float('inf')
         
         return total_loss / num_batches
     
@@ -500,20 +592,68 @@ class ModelTrainer:
             Dictionary containing training and validation losses
         """
         logger.info(f"Starting training for {self.config.num_epochs} epochs...")
+        logger.info("=" * 60)
+        
+        # Print training summary
+        print(f"\n{'='*20} TRAINING SUMMARY {'='*20}")
+        print(f"📋 Configuration:")
+        print(f"   • Total epochs: {self.config.num_epochs}")
+        print(f"   • Batch size: {self.config.batch_size}")
+        print(f"   • Learning rate: {self.config.learning_rate}")
+        print(f"   • Device: {self.device}")
+        print(f"   • Mixed precision: {'Enabled' if self.use_amp else 'Disabled'}")
+        
+        # Calculate approximate data info
+        train_samples = self.train_data['time_series'].shape[0]
+        test_samples = self.test_data['time_series'].shape[0]
+        total_batches_per_epoch = (train_samples + self.config.batch_size - 1) // self.config.batch_size
+        
+        print(f"📊 Data Info:")
+        print(f"   • Training samples: {train_samples:,}")
+        print(f"   • Test samples: {test_samples:,}")
+        print(f"   • Batches per epoch: ~{total_batches_per_epoch}")
+        print(f"   • Total training batches: ~{total_batches_per_epoch * self.config.num_epochs:,}")
+        
+        print(f"🎯 Training Goals:")
+        print(f"   • Target: Minimize combined loss (scalar + vector + matrix)")
+        print(f"   • Early stopping: {'Enabled' if self.config.use_early_stopping else 'Disabled'}")
+        if self.config.use_early_stopping:
+            print(f"   • Patience: {self.config.patience} epochs")
+        print(f"   • Validation frequency: Every {self.config.validation_frequency} epoch(s)")
+        
+        print(f"{'='*60}")
         
         for epoch in range(self.config.num_epochs):
+            # Print epoch header
+            print(f"\n{'='*20} EPOCH {epoch+1}/{self.config.num_epochs} {'='*20}")
+            logger.info(f"Starting Epoch {epoch+1}/{self.config.num_epochs}")
+            
             # Training
+            print(f"Training...")
             train_loss = self.train_epoch()
             self.train_losses.append(train_loss)
             
             # Validation
             if epoch % self.config.validation_frequency == 0:
+                print(f"Validating...")
                 val_loss = self.validate_epoch()
                 self.val_losses.append(val_loss)
                 
-                # Log progress
-                logger.info(f"Epoch [{epoch+1}/{self.config.num_epochs}] - "
-                           f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                # Enhanced progress logging
+                if val_loss == float('inf'):
+                    progress_msg = f"Epoch [{epoch+1}/{self.config.num_epochs}] - Train Loss: {train_loss:.4f}, Val Loss: N/A (no validation data)"
+                    print(f"✓ {progress_msg}")
+                    logger.info(progress_msg)
+                else:
+                    progress_msg = f"Epoch [{epoch+1}/{self.config.num_epochs}] - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                    print(f"✓ {progress_msg}")
+                    logger.info(progress_msg)
+                    
+                    # Show improvement indicator
+                    if val_loss < self.best_val_loss:
+                        improvement = self.best_val_loss - val_loss
+                        print(f"🎉 New best validation loss! Improved by {improvement:.4f}")
+                        logger.info(f"New best validation loss! Improved by {improvement:.4f}")
                 
                 # Log loss weights
                 loss_weights = self.model.get_loss_weights()
@@ -523,20 +663,66 @@ class ModelTrainer:
                 log_msg += f"Vector: {loss_weights['vector']:.4f}, Matrix: {loss_weights['matrix']:.4f}"
                 logger.info(log_msg)
                 
-                # Early stopping
-                if self.config.use_early_stopping:
+                # Show progress percentage
+                progress_pct = ((epoch + 1) / self.config.num_epochs) * 100
+                print(f"📊 Progress: {progress_pct:.1f}% complete ({epoch+1}/{self.config.num_epochs} epochs)")
+                
+                # Early stopping (only if we have validation data)
+                if self.config.use_early_stopping and val_loss != float('inf'):
                     if self._check_early_stopping(val_loss):
+                        print("🛑 Early stopping triggered")
                         logger.info("Early stopping triggered")
                         break
                 
-                # Learning rate scheduling
+                # Learning rate scheduling (only if we have validation data)
                 if self.scheduler is not None:
                     if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                        self.scheduler.step(val_loss)
+                        if val_loss != float('inf'):
+                            old_lr = self.optimizer.param_groups[0]['lr']
+                            self.scheduler.step(val_loss)
+                            new_lr = self.optimizer.param_groups[0]['lr']
+                            if new_lr != old_lr:
+                                print(f"📉 Learning rate reduced from {old_lr:.6f} to {new_lr:.6f}")
+                                logger.info(f"Learning rate reduced from {old_lr:.6f} to {new_lr:.6f}")
                     else:
                         self.scheduler.step()
+            else:
+                # For epochs without validation, still show training progress
+                progress_msg = f"Epoch [{epoch+1}/{self.config.num_epochs}] - Train Loss: {train_loss:.4f}"
+                print(f"✓ {progress_msg}")
+                logger.info(progress_msg)
+                
+                # Show progress percentage
+                progress_pct = ((epoch + 1) / self.config.num_epochs) * 100
+                print(f"📊 Progress: {progress_pct:.1f}% complete ({epoch+1}/{self.config.num_epochs} epochs)")
         
+        print(f"\n{'='*20} TRAINING COMPLETED {'='*20}")
         logger.info("Training completed")
+        
+        # Print final summary
+        print(f"🎉 Training completed successfully!")
+        print(f"📈 Final Results:")
+        print(f"   • Total epochs completed: {len(self.train_losses)}")
+        print(f"   • Final training loss: {self.train_losses[-1]:.4f}")
+        
+        if self.val_losses:
+            print(f"   • Final validation loss: {self.val_losses[-1]:.4f}")
+            print(f"   • Best validation loss: {min(self.val_losses):.4f}")
+            
+            # Show improvement
+            if len(self.train_losses) > 1:
+                train_improvement = self.train_losses[0] - self.train_losses[-1]
+                print(f"   • Training loss improvement: {train_improvement:.4f}")
+            
+            if len(self.val_losses) > 1:
+                val_improvement = self.val_losses[0] - min(self.val_losses)
+                print(f"   • Validation loss improvement: {val_improvement:.4f}")
+        
+        print(f"💾 Results saved to:")
+        print(f"   • Training log: training.log")
+        print(f"   • Loss curves: training_validation_losses.csv")
+        print(f"   • Model predictions: predictions/")
+        
         return {'train_losses': self.train_losses, 'val_losses': self.val_losses}
     
     def _check_early_stopping(self, val_loss: float) -> bool:
@@ -552,6 +738,35 @@ class ModelTrainer:
     def evaluate(self) -> Tuple[Dict[str, Any], Dict[str, float]]:
         """Evaluate the model and return predictions and metrics."""
         self.model.eval()
+        
+        # Check if we have any test data
+        test_batch_sizes = [
+            self.test_data['time_series'].shape[0],
+            self.test_data['static'].shape[0],
+            self.test_data['target'].shape[0],
+            self.test_data['list_1d_tensor'].shape[0],
+            self.test_data['list_2d_tensor'].shape[0],
+            self.test_data['y_list_1d'].shape[0],
+            self.test_data['y_list_2d'].shape[0]
+        ]
+        
+        if all(size == 0 for size in test_batch_sizes):
+            logger.warning("No test data available. Skipping evaluation.")
+            # Return empty predictions and default metrics
+            empty_predictions = {
+                'scalar': torch.empty(0, 0),
+                'vector': torch.empty(0, 0),
+                'matrix': torch.empty(0, 0, 0, 0)
+            }
+            default_metrics = {
+                'scalar_rmse': 0.0,
+                'scalar_mse': 0.0,
+                'vector_rmse': 0.0,
+                'vector_mse': 0.0,
+                'matrix_rmse': 0.0,
+                'matrix_mse': 0.0
+            }
+            return empty_predictions, default_metrics
         
         # Create evaluation data loader
         eval_dataset = TensorDataset(
@@ -628,6 +843,24 @@ class ModelTrainer:
                 all_targets['vector'].append(y_list_1d.cpu())
                 all_targets['matrix'].append(y_list_2d.cpu())
         
+        # Check if we have any predictions
+        if not all_predictions['scalar']:
+            logger.warning("No predictions generated. Returning empty results.")
+            empty_predictions = {
+                'scalar': torch.empty(0, 0),
+                'vector': torch.empty(0, 0),
+                'matrix': torch.empty(0, 0, 0, 0)
+            }
+            default_metrics = {
+                'scalar_rmse': 0.0,
+                'scalar_mse': 0.0,
+                'vector_rmse': 0.0,
+                'vector_mse': 0.0,
+                'matrix_rmse': 0.0,
+                'matrix_mse': 0.0
+            }
+            return empty_predictions, default_metrics
+        
         # Concatenate all batches
         predictions = {
             'scalar': torch.cat(all_predictions['scalar'], dim=0),
@@ -688,15 +921,45 @@ class ModelTrainer:
             test_y_list_2d = targets['matrix'].cpu().numpy()
             pred_matrix = predictions['matrix'].cpu().numpy()
             
+            # Debug logging
+            logger.info(f"Matrix predictions shape: {pred_matrix.shape}")
+            logger.info(f"Matrix targets shape: {test_y_list_2d.shape}")
+            
             # Squeeze pred_matrix if it has extra singleton dimension
             if pred_matrix.ndim == 4 and pred_matrix.shape[1] == 1:
                 pred_matrix = pred_matrix.squeeze(1)
+                logger.info(f"Pred matrix after squeeze: {pred_matrix.shape}")
             
-            # Ensure both arrays have 4 dimensions
+            # Safe dimension expansion - only expand if needed
+            if test_y_list_2d.ndim == 2:
+                # If it's 2D, we need to add channel and spatial dimensions
+                test_y_list_2d = np.expand_dims(test_y_list_2d, axis=1)  # Add channel dim
+                test_y_list_2d = np.expand_dims(test_y_list_2d, axis=2)  # Add spatial dim
+                logger.info(f"Expanded test_y_list_2d to: {test_y_list_2d.shape}")
+            elif test_y_list_2d.ndim == 3:
+                # If it's 3D, we might need to add a channel dimension
+                if test_y_list_2d.shape[1] == pred_matrix.shape[2] and test_y_list_2d.shape[2] == pred_matrix.shape[3]:
+                    # It's already in the right format (samples, rows, cols)
+                    test_y_list_2d = np.expand_dims(test_y_list_2d, axis=1)  # Add channel dim
+                    logger.info(f"Added channel dim to test_y_list_2d: {test_y_list_2d.shape}")
+            
+            # Ensure pred_matrix has the right dimensions
+            if pred_matrix.ndim == 2:
+                # If pred_matrix is 2D, reshape it to match
+                pred_matrix = pred_matrix.reshape(pred_matrix.shape[0], 1, 1, pred_matrix.shape[1])
+                logger.info(f"Reshaped pred_matrix to: {pred_matrix.shape}")
+            elif pred_matrix.ndim == 3:
+                # If pred_matrix is 3D, add channel dimension
+                pred_matrix = np.expand_dims(pred_matrix, axis=1)
+                logger.info(f"Added channel dim to pred_matrix: {pred_matrix.shape}")
+            
+            # Ensure both arrays have 4 dimensions (samples, channels, rows, cols)
             while test_y_list_2d.ndim < 4:
                 test_y_list_2d = np.expand_dims(test_y_list_2d, axis=-1)
             while pred_matrix.ndim < 4:
                 pred_matrix = np.expand_dims(pred_matrix, axis=-1)
+            
+            logger.info(f"Final shapes - test_y_list_2d: {test_y_list_2d.shape}, pred_matrix: {pred_matrix.shape}")
             
             # Ensure shapes match
             min_samples = min(test_y_list_2d.shape[0], pred_matrix.shape[0])
@@ -768,6 +1031,14 @@ class ModelTrainer:
     
     def _save_predictions(self, predictions: Dict[str, np.ndarray], predictions_dir: Path):
         """Save predictions with inverse transformation."""
+        # Debug logging to understand tensor shapes
+        logger.info("Debug: Prediction tensor shapes:")
+        for key, tensor in predictions.items():
+            if hasattr(tensor, 'shape'):
+                logger.info(f"  {key}: {tensor.shape}")
+            else:
+                logger.info(f"  {key}: {type(tensor)}")
+        
         # Save scalar predictions
         predictions_scalar_np = predictions['scalar'].cpu().numpy()
         # Use only the correct number of columns
@@ -779,50 +1050,96 @@ class ModelTrainer:
         predictions_1d_dict = {}
         ground_truth_1d_dict = {}
         
-        for idx, col in enumerate(self.data_info['x_list_columns_1d']):
-            y_col = 'Y_' + col
-            if y_col in self.scalers['list_1d']:
-                predictions_1d_dict[y_col] = self.scalers['list_1d'][y_col].inverse_transform(
-                    predictions['vector'][:, idx, :]
-                )
+        # Check if we have any vector predictions
+        if 'vector' in predictions and predictions['vector'].shape[0] > 0 and predictions['vector'].shape[1] > 0:
+            for idx, col in enumerate(self.data_info['x_list_columns_1d']):
+                y_col = 'Y_' + col
+                if y_col in self.scalers['list_1d']:
+                    pred_vector = predictions['vector']
+                    # Handle different tensor shapes
+                    if pred_vector.ndim == 2:
+                        # If it's 2D, assume shape is (samples, features)
+                        # We need to extract the corresponding feature
+                        if idx < pred_vector.shape[1]:
+                            pred_feature = pred_vector[:, idx:idx+1]  # Keep 2D shape for scaler
+                        else:
+                            logger.warning(f"Index {idx} out of bounds for vector predictions with shape {pred_vector.shape}")
+                            continue
+                    elif pred_vector.ndim == 3:
+                        # If it's 3D, assume shape is (samples, features, time_steps)
+                        pred_feature = pred_vector[:, idx, :]
+                    else:
+                        logger.warning(f"Unexpected vector prediction shape: {pred_vector.shape}")
+                        continue
+                    
+                    predictions_1d_dict[y_col] = self.scalers['list_1d'][y_col].inverse_transform(pred_feature)
+            
+            for y_col in self.test_data['list_1d']:
+                ground_truth_1d_dict[y_col] = self.test_data['list_1d'][y_col].cpu().numpy()
+        else:
+            logger.warning("No vector predictions available or predictions are empty")
         
-        for y_col in self.test_data['list_1d']:
-            ground_truth_1d_dict[y_col] = self.test_data['list_1d'][y_col].cpu().numpy()
-        
-        predictions_1d_df = pd.DataFrame({
-            col: predictions_1d_dict[col].tolist() for col in predictions_1d_dict
-        })
-        ground_truth_1d_df = pd.DataFrame({
-            col: ground_truth_1d_dict[col].tolist() for col in ground_truth_1d_dict
-        })
-        
-        predictions_1d_df.to_csv(predictions_dir / "predictions_1d.csv", index=False)
-        ground_truth_1d_df.to_csv(predictions_dir / "ground_truth_1d.csv", index=False)
+        # Only create DataFrames if we have data
+        if predictions_1d_dict:
+            predictions_1d_df = pd.DataFrame({
+                col: predictions_1d_dict[col].tolist() for col in predictions_1d_dict
+            })
+            ground_truth_1d_df = pd.DataFrame({
+                col: ground_truth_1d_dict[col].tolist() for col in ground_truth_1d_dict
+            })
+            
+            predictions_1d_df.to_csv(predictions_dir / "predictions_1d.csv", index=False)
+            ground_truth_1d_df.to_csv(predictions_dir / "ground_truth_1d.csv", index=False)
+        else:
+            logger.info("Skipping 1D predictions save due to empty data")
         
         # 2D predictions
         predictions_2d_dict = {}
         ground_truth_2d_dict = {}
         
-        for idx, col in enumerate(self.data_info['x_list_columns_2d']):
-            y_col = 'Y_' + col
-            if y_col in self.scalers['list_2d']:
-                pred_reshaped = predictions['matrix'][:, idx, :, :].reshape(-1, 1)
-                predictions_2d_dict[y_col] = self.scalers['list_2d'][y_col].inverse_transform(
-                    pred_reshaped
-                ).reshape(-1, predictions['matrix'].shape[2], predictions['matrix'].shape[3])
+        # Check if we have any matrix predictions
+        if 'matrix' in predictions and predictions['matrix'].shape[0] > 0 and predictions['matrix'].shape[1] > 0:
+            for idx, col in enumerate(self.data_info['x_list_columns_2d']):
+                y_col = 'Y_' + col
+                if y_col in self.scalers['list_2d']:
+                    pred_matrix = predictions['matrix'][:, idx, :, :]
+                    # Ensure pred_matrix is 3D (samples, rows, cols)
+                    if pred_matrix.ndim == 2:
+                        pred_matrix = pred_matrix[:, None, :]
+                    elif pred_matrix.ndim == 1:
+                        pred_matrix = pred_matrix[None, None, :]
+                    pred_reshaped = pred_matrix.reshape(-1, 1)
+                    inv_pred = self.scalers['list_2d'][y_col].inverse_transform(pred_reshaped)
+                    # Reshape back to (samples, rows, cols)
+                    n_samples = predictions['matrix'].shape[0]
+                    n_rows = predictions['matrix'].shape[2]
+                    n_cols = predictions['matrix'].shape[3]
+                    predictions_2d_dict[y_col] = inv_pred.reshape(n_samples, n_rows, n_cols)
+            
+            for y_col in self.test_data['list_2d']:
+                gt_matrix = self.test_data['list_2d'][y_col].cpu().numpy()
+                # Ensure gt_matrix is 3D (samples, rows, cols)
+                if gt_matrix.ndim == 2:
+                    gt_matrix = gt_matrix[:, None, :]
+                elif gt_matrix.ndim == 1:
+                    gt_matrix = gt_matrix[None, None, :]
+                ground_truth_2d_dict[y_col] = gt_matrix
+        else:
+            logger.warning("No matrix predictions available or predictions are empty")
         
-        for y_col in self.test_data['list_2d']:
-            ground_truth_2d_dict[y_col] = self.test_data['list_2d'][y_col].cpu().numpy()
-        
-        predictions_2d_df = pd.DataFrame({
-            col: predictions_2d_dict[col].tolist() for col in predictions_2d_dict
-        })
-        ground_truth_2d_df = pd.DataFrame({
-            col: ground_truth_2d_dict[col].tolist() for col in ground_truth_2d_dict
-        })
-        
-        predictions_2d_df.to_csv(predictions_dir / "predictions_2d.csv", index=False)
-        ground_truth_2d_df.to_csv(predictions_dir / "ground_truth_2d.csv", index=False)
+        # Only create DataFrames if we have data
+        if predictions_2d_dict:
+            predictions_2d_df = pd.DataFrame({
+                col: predictions_2d_dict[col].tolist() for col in predictions_2d_dict
+            })
+            ground_truth_2d_df = pd.DataFrame({
+                col: ground_truth_2d_dict[col].tolist() for col in ground_truth_2d_dict
+            })
+            
+            predictions_2d_df.to_csv(predictions_dir / "predictions_2d.csv", index=False)
+            ground_truth_2d_df.to_csv(predictions_dir / "ground_truth_2d.csv", index=False)
+        else:
+            logger.info("Skipping 2D predictions save due to empty data")
         
         logger.info("All predictions saved successfully")
     

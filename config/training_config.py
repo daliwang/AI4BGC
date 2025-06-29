@@ -441,7 +441,7 @@ def get_full_dataset_config() -> TrainingConfigManager:
     
     # Update training config for production
     config.update_training_config(
-        num_epochs=50,
+        num_epochs=10,
         batch_size=128,
         learning_rate=0.0005,
         weight_decay=1e-4,

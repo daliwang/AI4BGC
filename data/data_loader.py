@@ -8,11 +8,11 @@ making it easy to work with different input and output configurations.
 import os
 import glob
 import logging
-import pandas as pd
 import numpy as np
+import pandas as pd
 import torch
-from typing import Dict, List, Tuple, Optional, Any
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from typing import Dict, List, Tuple, Any, Optional
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
 from sklearn.utils import shuffle
 from sklearn.metrics import mean_squared_error
 import warnings
@@ -87,7 +87,7 @@ class DataLoader:
         
         logger.info(f"Total files to load: {len(input_files)}")
         
-        # Load all files
+        # Load all files sequentially
         df_list = []
         for file in input_files:
             try:
@@ -147,9 +147,95 @@ class DataLoader:
         """Filter data based on specified criteria."""
         if self.data_config.filter_column:
             initial_size = len(self.df)
-            self.df = self.df.dropna(subset=[self.data_config.filter_column])
+            
+            # Debug: Check the filter column before filtering
+            if self.data_config.filter_column in self.df.columns:
+                filter_col_data = self.df[self.data_config.filter_column]
+                
+                # Special handling for H2OSOI_10CM column (20 layers, ignore first 5)
+                if self.data_config.filter_column == 'H2OSOI_10CM':
+                    logger.info("Processing H2OSOI_10CM column (20 layers, ignoring first 5)")
+                    
+                    # Check if the column contains list/array data
+                    if isinstance(filter_col_data.iloc[0], (list, np.ndarray)):
+                        # Optimized vectorized filtering for large datasets
+                        logger.info("Using vectorized filtering for H2OSOI_10CM...")
+                        
+                        # Convert to numpy arrays for faster processing
+                        filter_arrays = filter_col_data.values
+                        
+                        # Vectorized validation check
+                        def is_valid_sample(arr):
+                            if isinstance(arr, (list, np.ndarray)):
+                                if len(arr) >= 20:
+                                    layers_5_to_19 = arr[5:20]
+                                    return not np.all(np.isnan(layers_5_to_19))
+                                elif len(arr) >= 15:
+                                    available_layers = arr[5:]
+                                    return not np.all(np.isnan(available_layers))
+                            return False
+                        
+                        # Use numpy vectorize for faster processing
+                        valid_mask = np.vectorize(is_valid_sample, otypes=[bool])(filter_arrays)
+                        
+                        valid_count = np.sum(valid_mask)
+                        nan_count = initial_size - valid_count
+                        
+                        logger.info(f"Filter column '{self.data_config.filter_column}' stats (layers 5-19):")
+                        logger.info(f"  - Total samples: {initial_size}")
+                        logger.info(f"  - Valid (non-NaN in layers 5-19): {valid_count}")
+                        logger.info(f"  - Invalid (all NaN in layers 5-19): {nan_count}")
+                        logger.info(f"  - Invalid percentage: {(nan_count/initial_size)*100:.2f}%")
+                        
+                        # Apply the filter using boolean indexing
+                        self.df = self.df[valid_mask].reset_index(drop=True)
+                        
+                    else:
+                        # For scalar data, use original logic
+                        nan_count = filter_col_data.isna().sum()
+                        valid_count = filter_col_data.notna().sum()
+                        logger.info(f"Filter column '{self.data_config.filter_column}' stats (scalar):")
+                        logger.info(f"  - Total samples: {initial_size}")
+                        logger.info(f"  - Valid (non-NaN): {valid_count}")
+                        logger.info(f"  - NaN values: {nan_count}")
+                        logger.info(f"  - NaN percentage: {(nan_count/initial_size)*100:.2f}%")
+                        
+                        # Show some sample values
+                        sample_values = filter_col_data.dropna().head(3)
+                        logger.info(f"  - Sample values: {sample_values.tolist()}")
+                        
+                        # Perform the filtering
+                        self.df = self.df.dropna(subset=[self.data_config.filter_column])
+                else:
+                    # For other filter columns, use original logic
+                    nan_count = filter_col_data.isna().sum()
+                    valid_count = filter_col_data.notna().sum()
+                    logger.info(f"Filter column '{self.data_config.filter_column}' stats:")
+                    logger.info(f"  - Total samples: {initial_size}")
+                    logger.info(f"  - Valid (non-NaN): {valid_count}")
+                    logger.info(f"  - NaN values: {nan_count}")
+                    logger.info(f"  - NaN percentage: {(nan_count/initial_size)*100:.2f}%")
+                    
+                    # Show some sample values
+                    sample_values = filter_col_data.dropna().head(3)
+                    logger.info(f"  - Sample values: {sample_values.tolist()}")
+                    
+                    # Perform the filtering
+                    self.df = self.df.dropna(subset=[self.data_config.filter_column])
+            else:
+                logger.warning(f"Filter column '{self.data_config.filter_column}' not found in dataset")
+                return
+            
             final_size = len(self.df)
             logger.info(f"Filtered data: {initial_size} -> {final_size} samples")
+            logger.info(f"Removed {initial_size - final_size} samples due to NaN values in '{self.data_config.filter_column}'")
+            
+            # Check if we have enough data for train/test split
+            if final_size < 10:
+                logger.warning(f"Very few samples remaining after filtering: {final_size}")
+                logger.warning("This might cause issues with train/test splitting")
+        else:
+            logger.info("No filtering applied (filter_column not specified)")
     
     def _process_time_series(self):
         """Process time series columns."""
@@ -580,8 +666,19 @@ class DataLoader:
         """
         logger.info("Splitting data into train/test sets...")
         
-        train_size = int(self.data_config.train_split * len(self.df))
-        test_size = len(self.df) - train_size
+        total_samples = len(self.df)
+        train_size = int(self.data_config.train_split * total_samples)
+        test_size = total_samples - train_size
+        
+        logger.info(f"Data splitting details:")
+        logger.info(f"  - Total samples: {total_samples}")
+        logger.info(f"  - Train split ratio: {self.data_config.train_split}")
+        logger.info(f"  - Train size: {train_size}")
+        logger.info(f"  - Test size: {test_size}")
+        
+        if test_size == 0:
+            logger.error("Test size is 0! This will cause evaluation issues.")
+            logger.error("Consider reducing train_split ratio or increasing dataset size.")
         
         # Split time series data
         train_time_series = normalized_data['time_series_data'][:train_size]
@@ -609,6 +706,12 @@ class DataLoader:
         test_list_2d = {
             col: tensor[train_size:] for col, tensor in normalized_data['list_2d_data'].items()
         }
+        
+        logger.info(f"Split completed:")
+        logger.info(f"  - Train time_series shape: {train_time_series.shape}")
+        logger.info(f"  - Test time_series shape: {test_time_series.shape}")
+        logger.info(f"  - Train static shape: {train_static.shape}")
+        logger.info(f"  - Test static shape: {test_static.shape}")
         
         return {
             'train': {
