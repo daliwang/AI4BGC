@@ -131,6 +131,11 @@ def main():
         help='Logging level'
     )
     parser.add_argument(
+        '--output-dir',
+        default='results',
+        help='Output directory for results'
+    )
+    parser.add_argument(
         '--custom-inputs',
         nargs='+',
         help='Custom input features (overrides config)'
@@ -146,6 +151,11 @@ def main():
     # Setup logging
     setup_logging(args.log_level)
     logger = logging.getLogger(__name__)
+    
+    # Create output directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory: {output_dir}")
     
     try:
         logger.info(f"Starting training with configuration: {args.config_name}")
@@ -216,6 +226,11 @@ def main():
             actual_2d_channels=actual_2d_channels
         )
         
+        # Update training config with output directory
+        config.training_config.model_save_path = str(output_dir / "model.pt")
+        config.training_config.losses_save_path = str(output_dir / "training_validation_losses.csv")
+        config.training_config.predictions_dir = str(output_dir / "predictions")
+        
         # Initialize trainer
         logger.info("Initializing trainer...")
         trainer = ModelTrainer(
@@ -233,6 +248,13 @@ def main():
         
         logger.info("Training completed successfully!")
         logger.info(f"Final metrics: {results['metrics']}")
+        
+        # Save results to output directory
+        import json
+        with open(output_dir / "metrics.json", "w") as f:
+            json.dump(results['metrics'], f, indent=2)
+        
+        logger.info(f"Results saved to: {output_dir}")
         
         return results
         

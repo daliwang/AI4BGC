@@ -681,8 +681,8 @@ class DataLoader:
             logger.error("Consider reducing train_split ratio or increasing dataset size.")
         
         # Split time series data
-        train_time_series = normalized_data['time_series_data'][:train_size]
-        test_time_series = normalized_data['time_series_data'][train_size:]
+        train_time_series = normalized_data['time_series_data'][:, :train_size, :]
+        test_time_series = normalized_data['time_series_data'][:, train_size:, :]
         
         # Split static data
         train_static = normalized_data['static_data'][:train_size]

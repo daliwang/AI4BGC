@@ -215,8 +215,14 @@ class ModelTrainer:
         if tensors:
             return torch.cat(tensors, dim=1)
         else:
-            # Return empty tensor with correct batch size
-            batch_size = next(iter(list_dict.values())).shape[0] if list_dict else 0
+            # Return empty tensor with correct batch size from other data sources
+            # Use the batch size from time_series data if available
+            if hasattr(self, 'train_data') and 'time_series' in self.train_data:
+                batch_size = self.train_data['time_series'].shape[0]
+            elif hasattr(self, 'test_data') and 'time_series' in self.test_data:
+                batch_size = self.test_data['time_series'].shape[0]
+            else:
+                batch_size = 0
             return torch.empty((batch_size, 0), device=self.device)
 
     def _concat_list_columns_2d(self, list_dict, col_names):
@@ -225,7 +231,14 @@ class ModelTrainer:
         if tensors:
             return torch.cat(tensors, dim=1)
         else:
-            batch_size = next(iter(list_dict.values())).shape[0] if list_dict else 0
+            # Return empty tensor with correct batch size from other data sources
+            # Use the batch size from time_series data if available
+            if hasattr(self, 'train_data') and 'time_series' in self.train_data:
+                batch_size = self.train_data['time_series'].shape[0]
+            elif hasattr(self, 'test_data') and 'time_series' in self.test_data:
+                batch_size = self.test_data['time_series'].shape[0]
+            else:
+                batch_size = 0
             return torch.empty((batch_size, 0, 0, 0), device=self.device)
     
     def train_epoch(self) -> float:
@@ -1205,8 +1218,8 @@ class ModelTrainer:
                 if (epoch % 5 == 0 and self.config.log_gpu_memory):
                     self.gpu_monitor.log_gpu_stats(f"Epoch {epoch+1} - ")
                 
-                # Check for early stopping
-                if len(val_losses) > 10 and val_losses[-1] > min(val_losses[-10:]):
+                # Check for early stopping (only if enabled in config)
+                if self.config.use_early_stopping and len(val_losses) > 10 and val_losses[-1] > min(val_losses[-10:]):
                     logger.info("Early stopping triggered")
                     break
             

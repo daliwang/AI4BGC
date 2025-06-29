@@ -439,15 +439,19 @@ def get_full_dataset_config() -> TrainingConfigManager:
         matrix_output_size=len(config.data_config.x_list_columns_2d)
     )
     
-    # Update training config for production
+    # Update training config for production (no epoch constraint)
     config.update_training_config(
-        num_epochs=10,
+        num_epochs=500,  # Set to 20 epochs for testing
         batch_size=128,
         learning_rate=0.0005,
         weight_decay=1e-4,
         device='cuda',
         log_gpu_memory=True,
-        prefetch_factor=None
+        prefetch_factor=None,
+        # Enable early stopping to prevent overfitting
+        use_early_stopping=False,
+        patience=20,
+        min_delta=0.001
     )
     
     return config
