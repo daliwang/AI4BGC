@@ -74,16 +74,17 @@ class DataLoader:
         for path in self.data_config.data_paths:
             pattern = os.path.join(path, self.data_config.file_pattern)
             files = sorted(glob.glob(pattern))
-            input_files.extend(files)
             logger.info(f"Found {len(files)} files in {path}")
+            
+            # Limit number of files per path if specified
+            if self.data_config.max_files is not None:
+                files = files[:self.data_config.max_files]
+                logger.info(f"Limited to {len(files)} files from {path}")
+            
+            input_files.extend(files)
         
         if not input_files:
             raise RuntimeError("No data files found in specified paths")
-        
-        # Limit number of files if specified
-        if self.data_config.max_files is not None:
-            input_files = input_files[:self.data_config.max_files]
-            logger.info(f"Limited to {len(input_files)} files for testing")
         
         logger.info(f"Total files to load: {len(input_files)}")
         
@@ -145,9 +146,10 @@ class DataLoader:
     
     def _filter_data(self):
         """Filter data based on specified criteria."""
+        initial_size = len(self.df)
+        
+        # Filter by specific column if specified
         if self.data_config.filter_column:
-            initial_size = len(self.df)
-            
             # Debug: Check the filter column before filtering
             if self.data_config.filter_column in self.df.columns:
                 filter_col_data = self.df[self.data_config.filter_column]
@@ -235,7 +237,38 @@ class DataLoader:
                 logger.warning(f"Very few samples remaining after filtering: {final_size}")
                 logger.warning("This might cause issues with train/test splitting")
         else:
-            logger.info("No filtering applied (filter_column not specified)")
+            logger.info("No specific column filtering applied")
+        
+        # Filter NaN values in time series columns if enabled
+        if self.data_config.filter_time_series_nan:
+            logger.info("Filtering NaN values in time series columns...")
+            initial_size = len(self.df)
+            
+            # Check each time series column for NaN values
+            for col in self.data_config.time_series_columns:
+                if col in self.df.columns:
+                    # Count samples with problematic time series data
+                    problematic_mask = []
+                    for idx, value in enumerate(self.df[col]):
+                        is_problematic = (
+                            not isinstance(value, (list, np.ndarray)) or 
+                            (isinstance(value, (list, np.ndarray)) and len(value) == 0) or
+                            (isinstance(value, (list, np.ndarray)) and np.isnan(value).any())
+                        )
+                        problematic_mask.append(is_problematic)
+                    
+                    problematic_count = sum(problematic_mask)
+                    if problematic_count > 0:
+                        logger.info(f"Column {col}: {problematic_count} problematic samples out of {len(self.df)}")
+                        # Remove problematic samples
+                        self.df = self.df[~np.array(problematic_mask)].reset_index(drop=True)
+                        logger.info(f"Removed {problematic_count} samples with problematic data in {col}")
+            
+            final_size = len(self.df)
+            logger.info(f"Time series filtering: {initial_size} -> {final_size} samples")
+            logger.info(f"Removed {initial_size - final_size} samples due to NaN/invalid time series data")
+        else:
+            logger.info("No time series NaN filtering applied")
     
     def _process_time_series(self):
         """Process time series columns."""
@@ -248,6 +281,17 @@ class DataLoader:
             
             logger.debug(f"Processing time series column: {col}")
             
+            # Check for problematic data before processing
+            problematic_samples = []
+            for idx, value in enumerate(self.df[col]):
+                if not isinstance(value, (list, np.ndarray)) or (isinstance(value, (list, np.ndarray)) and len(value) == 0):
+                    problematic_samples.append((idx, type(value), value))
+                    if len(problematic_samples) <= 5:  # Only log first 5 problematic samples
+                        logger.debug(f"Sample {idx} has problematic data: {type(value)} = {value}")
+            
+            if problematic_samples:
+                logger.warning(f"Found {len(problematic_samples)} samples with problematic time series data in column {col}")
+            
             # Pad/truncate time series to specified length
             self.df[col] = self.df[col].apply(
                 lambda x: self._process_time_series_item(x, col)
@@ -255,21 +299,55 @@ class DataLoader:
     
     def _process_time_series_item(self, x: Any, col: str) -> np.ndarray:
         """Process a single time series item."""
-        if isinstance(x, list):
-            # Pad or truncate to target length
-            if len(x) > self.data_config.max_time_series_length:
-                x = x[:self.data_config.max_time_series_length]
-            
-            # Take last N elements
-            if len(x) > self.data_config.time_series_length:
-                x = x[-self.data_config.time_series_length:]
-            
-            # Pad if shorter
-            if len(x) < self.data_config.time_series_length:
-                x = np.pad(x, (0, self.data_config.time_series_length - len(x)), 'constant')
-            
-            return np.array(x, dtype=np.float32)
-        else:
+        try:
+            if isinstance(x, list) and len(x) > 0:
+                # Convert to numpy array and handle NaN values
+                x_array = np.array(x, dtype=np.float32)
+                
+                # Handle NaN values
+                if np.isnan(x_array).any():
+                    x_array = np.nan_to_num(x_array, nan=0.0)
+                
+                # Pad or truncate to target length
+                if len(x_array) > self.data_config.max_time_series_length:
+                    x_array = x_array[:self.data_config.max_time_series_length]
+                
+                # Take last N elements
+                if len(x_array) > self.data_config.time_series_length:
+                    x_array = x_array[-self.data_config.time_series_length:]
+                
+                # Pad if shorter
+                if len(x_array) < self.data_config.time_series_length:
+                    x_array = np.pad(x_array, (0, self.data_config.time_series_length - len(x_array)), 'constant')
+                
+                return x_array
+            elif isinstance(x, np.ndarray) and x.size > 0:
+                # Handle numpy array input
+                x_array = x.astype(np.float32)
+                
+                # Handle NaN values
+                if np.isnan(x_array).any():
+                    x_array = np.nan_to_num(x_array, nan=0.0)
+                
+                # Pad or truncate to target length
+                if len(x_array) > self.data_config.max_time_series_length:
+                    x_array = x_array[:self.data_config.max_time_series_length]
+                
+                # Take last N elements
+                if len(x_array) > self.data_config.time_series_length:
+                    x_array = x_array[-self.data_config.time_series_length:]
+                
+                # Pad if shorter
+                if len(x_array) < self.data_config.time_series_length:
+                    x_array = np.pad(x_array, (0, self.data_config.time_series_length - len(x_array)), 'constant')
+                
+                return x_array
+            else:
+                # For None, NaN, empty lists, or other invalid data
+                logger.debug(f"Invalid time series data for column {col}: {type(x)} = {x}")
+                return np.zeros(self.data_config.time_series_length, dtype=np.float32)
+        except Exception as e:
+            logger.warning(f"Error processing time series item for column {col}: {e}, using zeros")
             return np.zeros(self.data_config.time_series_length, dtype=np.float32)
     
     def _process_list_columns(self):
@@ -412,21 +490,10 @@ class DataLoader:
         }
     
     def _get_static_columns(self) -> List[str]:
-        """Get static columns (non-time series, non-list, non-target)."""
-        all_columns = set(self.df.columns)
-        time_series_set = set(self.data_config.time_series_columns)
-        list_1d_set = set(self.data_config.x_list_columns_1d + self.data_config.y_list_columns_1d)
-        list_2d_set = set(self.data_config.x_list_columns_2d + self.data_config.y_list_columns_2d)
-        target_set = set(self.data_config.y_list_columns_1d + self.data_config.y_list_columns_2d)
-        
-        # Get candidate static columns
-        candidate_static = list(
-            all_columns - time_series_set - list_1d_set - list_2d_set - target_set
-        )
-        
-        # Filter out columns that actually contain list data
+        """Get static columns using the fixed list from config to ensure consistency."""
+        # Use the fixed static columns from config
         static_columns = []
-        for col in candidate_static:
+        for col in self.data_config.static_columns:
             if col in self.df.columns:
                 # Check if the column contains list data
                 sample_values = self.df[col].dropna().head(10)
@@ -437,8 +504,13 @@ class DataLoader:
                         static_columns.append(col)
                     else:
                         logger.warning(f"Column {col} contains list data but was not in list configurations. Skipping from static columns.")
+                else:
+                    # Column exists but has no data, still include it
+                    static_columns.append(col)
+            else:
+                logger.warning(f"Static column {col} not found in dataset. This may cause shape mismatches.")
         
-        logger.info(f"Found {len(static_columns)} static columns: {static_columns}")
+        logger.info(f"Found {len(static_columns)} static columns from fixed config: {static_columns}")
         return static_columns
     
     def _get_target_columns(self) -> List[str]:
@@ -458,22 +530,46 @@ class DataLoader:
         """Normalize time series data."""
         logger.info("Normalizing time series data...")
         
-        # Stack time series data
-        time_series_data = np.stack([
-            np.column_stack(self.df[col]) for col in self.data_config.time_series_columns
-        ], axis=-1)
+        # Create time series data with proper shape (samples, time_steps, features)
+        time_series_list = []
+        for col in self.data_config.time_series_columns:
+            if col not in self.df.columns:
+                logger.warning(f"Time series column {col} not found, using zeros")
+                col_data = np.zeros((len(self.df), self.data_config.time_series_length), dtype=np.float32)
+            else:
+                # Extract time series data for this column
+                col_data = np.vstack(self.df[col].values)
+                if col_data.shape[1] != self.data_config.time_series_length:
+                    logger.warning(f"Time series column {col} has unexpected shape {col_data.shape}, expected {len(self.df)}x{self.data_config.time_series_length}")
+                if col_data.size == 0:
+                    logger.error(f"Time series column {col} has empty data!")
+                    col_data = np.zeros((len(self.df), self.data_config.time_series_length), dtype=np.float32)
+                elif np.isnan(col_data).any():
+                    logger.warning(f"Time series column {col} contains NaN values, filling with 0")
+                    col_data = np.nan_to_num(col_data, nan=0.0)
+                elif np.isinf(col_data).any():
+                    logger.warning(f"Time series column {col} contains infinite values, filling with 0")
+                    col_data = np.nan_to_num(col_data, nan=0.0, posinf=0.0, neginf=0.0)
+            time_series_list.append(col_data)
         
-        # Reshape for normalization
+        # Stack along feature dimension to get (samples, time_steps, features)
+        time_series_data = np.stack(time_series_list, axis=-1)
+        time_series_data = np.ascontiguousarray(time_series_data)
+        expected_shape = (len(self.df), self.data_config.time_series_length, len(self.data_config.time_series_columns))
+        if time_series_data.shape != expected_shape:
+            logger.error(f"Time series data has wrong shape: {time_series_data.shape}, expected {expected_shape}")
+            raise ValueError(f"Time series data has wrong shape: {time_series_data.shape}, expected {expected_shape}")
+        if time_series_data.shape[0] == 0 or time_series_data.shape[1] == 0:
+            logger.error(f"Time series data has invalid shape: {time_series_data.shape}")
+            raise ValueError(f"Time series data has invalid shape: {time_series_data.shape}")
+        
+        # Reshape for normalization: (samples * time_steps, features)
         original_shape = time_series_data.shape
         time_series_flat = time_series_data.reshape(-1, len(self.data_config.time_series_columns))
-        
-        # Apply normalization
         scaler = self._get_scaler(self.preprocessing_config.time_series_normalization)
         time_series_normalized = scaler.fit_transform(time_series_flat)
-        
-        # Reshape back
         time_series_data = time_series_normalized.reshape(original_shape)
-        
+        time_series_data = np.ascontiguousarray(time_series_data)
         return torch.tensor(time_series_data, dtype=self.preprocessing_config.data_type), scaler
     
     def _normalize_static(self, static_columns: List[str]) -> Tuple[torch.Tensor, Any]:
@@ -681,8 +777,8 @@ class DataLoader:
             logger.error("Consider reducing train_split ratio or increasing dataset size.")
         
         # Split time series data
-        train_time_series = normalized_data['time_series_data'][:, :train_size, :]
-        test_time_series = normalized_data['time_series_data'][:, train_size:, :]
+        train_time_series = normalized_data['time_series_data'][:train_size, :, :]
+        test_time_series = normalized_data['time_series_data'][train_size:, :, :]
         
         # Split static data
         train_static = normalized_data['static_data'][:train_size]
