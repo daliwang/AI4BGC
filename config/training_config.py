@@ -536,4 +536,156 @@ def get_fair_comparison_gpu_config() -> TrainingConfigManager:
         deterministic=True  # Ensure deterministic behavior
     )
     
+    return config
+
+
+def get_dataset1_config() -> TrainingConfigManager:
+    """Get configuration for training on Dataset 1 only (0_trendy_case)."""
+    config = TrainingConfigManager()
+    
+    # Update data config for Dataset 1 only
+    config.update_data_config(
+        data_paths=["/global/cfs/cdirs/m4814/daweigao/0_trendy_case/dataset"],
+        max_files=None,  # Use all available files
+        train_split=0.8
+    )
+    
+    # Update model config for Dataset 1
+    config.update_model_config(
+        lstm_hidden_size=512,
+        static_fc_size=1024,
+        num_tokens=32,
+        token_dim=256,
+        transformer_heads=16,
+        transformer_layers=8,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for Dataset 1
+    config.update_training_config(
+        num_epochs=500,
+        batch_size=128,
+        learning_rate=0.0005,
+        weight_decay=1e-4,
+        device='cuda',
+        log_gpu_memory=True,
+        prefetch_factor=None,
+        use_early_stopping=False,
+        patience=20,
+        min_delta=0.001
+    )
+    
+    return config
+
+
+def get_dataset2_config() -> TrainingConfigManager:
+    """Get configuration for training on Dataset 2 only (1_0.5_degree)."""
+    config = TrainingConfigManager()
+    
+    # Update data config for Dataset 2 only - without filtering
+    config.update_data_config(
+        data_paths=["/global/cfs/cdirs/m4814/daweigao/1_0.5_degree/dataset"],
+        max_files=None,  # Use all available files
+        train_split=0.8,
+        filter_column=None  # Remove filtering to use all samples
+    )
+    
+    # Update model config for Dataset 2
+    config.update_model_config(
+        lstm_hidden_size=512,
+        static_fc_size=1024,
+        num_tokens=32,
+        token_dim=256,
+        transformer_heads=16,
+        transformer_layers=8,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for Dataset 2 with reduced batch size and more epochs
+    config.update_training_config(
+        num_epochs=150,  # Increased from 50 to 150
+        batch_size=32,   # Reduced batch size to handle larger dataset
+        learning_rate=0.001,
+        scalar_loss_weight=1.0,
+        vector_loss_weight=1.0,
+        matrix_loss_weight=1.0,
+        optimizer_type='adam',
+        weight_decay=0.0,
+        use_scheduler=False,
+        use_early_stopping=True,
+        patience=15,  # Increased patience for longer training
+        min_delta=0.001,
+        device='auto',
+        use_mixed_precision=True,
+        use_amp=True,
+        use_grad_scaler=True,
+        pin_memory=True,
+        num_workers=0,
+        prefetch_factor=2,
+        persistent_workers=False,
+        empty_cache_freq=10,
+        max_memory_usage=0.9,
+        memory_efficient_attention=True,
+        log_gpu_memory=True,
+        log_gpu_utilization=True,
+        gpu_monitor_interval=100,
+        save_model=True,
+        model_save_path="dataset2_model.pt",
+        save_losses=True,
+        losses_save_path="dataset2_training_validation_losses.csv",
+        save_predictions=True,
+        predictions_dir="dataset2_predictions",
+        validation_frequency=1,
+        random_seed=42,
+        deterministic=True
+    )
+    
+    return config
+
+
+def get_combined_dataset_config() -> TrainingConfigManager:
+    """Get configuration for training on both datasets combined."""
+    config = TrainingConfigManager()
+    
+    # Update data config for combined dataset (both paths)
+    config.update_data_config(
+        data_paths=[
+            "/global/cfs/cdirs/m4814/daweigao/0_trendy_case/dataset",
+            "/global/cfs/cdirs/m4814/daweigao/1_0.5_degree/dataset"
+        ],
+        max_files=None,  # Use all available files
+        train_split=0.8
+    )
+    
+    # Update model config for combined dataset
+    config.update_model_config(
+        lstm_hidden_size=512,
+        static_fc_size=1024,
+        num_tokens=32,
+        token_dim=256,
+        transformer_heads=16,
+        transformer_layers=8,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for combined dataset
+    config.update_training_config(
+        num_epochs=500,
+        batch_size=128,
+        learning_rate=0.0005,
+        weight_decay=1e-4,
+        device='cuda',
+        log_gpu_memory=True,
+        prefetch_factor=None,
+        use_early_stopping=False,
+        patience=20,
+        min_delta=0.001
+    )
+    
     return config 
