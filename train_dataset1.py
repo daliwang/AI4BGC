@@ -50,6 +50,17 @@ def main():
     try:
         # Get configuration
         config = get_dataset1_config()
+        
+        # Update configuration paths to save in output directory
+        config.training_config.model_save_path = os.path.join(output_dir, "model.pt")
+        config.training_config.losses_save_path = os.path.join(output_dir, "training_validation_losses.csv")
+        config.training_config.predictions_dir = os.path.join(output_dir, "predictions")
+        
+        logger.info("Updated output paths:")
+        logger.info(f"  Model: {config.training_config.model_save_path}")
+        logger.info(f"  Losses: {config.training_config.losses_save_path}")
+        logger.info(f"  Predictions: {config.training_config.predictions_dir}")
+        
         logger.info("Initializing data loader...")
         
         # Initialize data loader
@@ -93,6 +104,7 @@ def main():
         results = trainer.run_training_pipeline()
         
         logger.info("Training completed successfully!")
+        logger.info(f"All results saved to: {output_dir}")
         
     except Exception as e:
         logger.error(f"Training failed with error: {str(e)}", exc_info=True)

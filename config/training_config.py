@@ -563,18 +563,43 @@ def get_dataset1_config() -> TrainingConfigManager:
         matrix_output_size=len(config.data_config.x_list_columns_2d)
     )
     
-    # Update training config for Dataset 1
+    # Update training config for Dataset 1 with comprehensive saving settings
     config.update_training_config(
-        num_epochs=500,
+        num_epochs=100,  # Set to 150 epochs as requested
         batch_size=128,
         learning_rate=0.0005,
+        scalar_loss_weight=1.0,
+        vector_loss_weight=1.0,
+        matrix_loss_weight=1.0,
+        optimizer_type='adam',
         weight_decay=1e-4,
+        use_scheduler=False,
+        use_early_stopping=False,  # Disable early stopping for safety
+        patience=15,  # Not used when early stopping is disabled
+        min_delta=0.001,
         device='cuda',
+        use_mixed_precision=True,
+        use_amp=True,
+        use_grad_scaler=True,
+        pin_memory=True,
+        num_workers=0,
+        prefetch_factor=None,  # Fixed: must be None when num_workers=0
+        persistent_workers=False,
+        empty_cache_freq=10,
+        max_memory_usage=0.9,
+        memory_efficient_attention=True,
         log_gpu_memory=True,
-        prefetch_factor=None,
-        use_early_stopping=False,
-        patience=20,
-        min_delta=0.001
+        log_gpu_utilization=True,
+        gpu_monitor_interval=100,
+        save_model=True,
+        model_save_path="model.pt",  # Will be saved in case directory
+        save_losses=True,
+        losses_save_path="training_validation_losses.csv",  # Will be saved in case directory
+        save_predictions=True,
+        predictions_dir="predictions",  # Will be saved in case directory
+        validation_frequency=1,
+        random_seed=42,
+        deterministic=True
     )
     
     return config
@@ -625,7 +650,7 @@ def get_dataset2_config() -> TrainingConfigManager:
         use_grad_scaler=True,
         pin_memory=True,
         num_workers=0,
-        prefetch_factor=2,
+        prefetch_factor=None,  # Fixed: must be None when num_workers=0
         persistent_workers=False,
         empty_cache_freq=10,
         max_memory_usage=0.9,
@@ -674,18 +699,43 @@ def get_combined_dataset_config() -> TrainingConfigManager:
         matrix_output_size=len(config.data_config.x_list_columns_2d)
     )
     
-    # Update training config for combined dataset
+    # Update training config for combined dataset with comprehensive saving settings
     config.update_training_config(
-        num_epochs=500,
+        num_epochs=150,  # Set to 150 epochs for consistency
         batch_size=128,
         learning_rate=0.0005,
+        scalar_loss_weight=1.0,
+        vector_loss_weight=1.0,
+        matrix_loss_weight=1.0,
+        optimizer_type='adam',
         weight_decay=1e-4,
+        use_scheduler=False,
+        use_early_stopping=True,
+        patience=15,  # Early stopping patience
+        min_delta=0.001,
         device='cuda',
+        use_mixed_precision=True,
+        use_amp=True,
+        use_grad_scaler=True,
+        pin_memory=True,
+        num_workers=0,
+        prefetch_factor=None,  # Fixed: must be None when num_workers=0
+        persistent_workers=False,
+        empty_cache_freq=10,
+        max_memory_usage=0.9,
+        memory_efficient_attention=True,
         log_gpu_memory=True,
-        prefetch_factor=None,
-        use_early_stopping=False,
-        patience=20,
-        min_delta=0.001
+        log_gpu_utilization=True,
+        gpu_monitor_interval=100,
+        save_model=True,
+        model_save_path="combined_model.pt",
+        save_losses=True,
+        losses_save_path="combined_training_validation_losses.csv",
+        save_predictions=True,
+        predictions_dir="combined_predictions",
+        validation_frequency=1,
+        random_seed=42,
+        deterministic=True
     )
     
     return config 

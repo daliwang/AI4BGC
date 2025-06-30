@@ -1006,14 +1006,7 @@ class ModelTrainer:
     
     def save_results(self, predictions: Dict[str, np.ndarray], metrics: Dict[str, float]):
         """Save training results and predictions."""
-        if not self.config.save_predictions:
-            return
-        
-        # Create predictions directory
-        predictions_dir = Path(self.config.predictions_dir)
-        predictions_dir.mkdir(exist_ok=True)
-        
-        # Save losses
+        # Save losses (independent of predictions)
         if self.config.save_losses:
             losses_df = pd.DataFrame({
                 'Epoch': list(range(1, len(self.train_losses) + 1)),
@@ -1023,24 +1016,30 @@ class ModelTrainer:
             losses_df.to_csv(self.config.losses_save_path, index=False)
             logger.info(f"Losses saved to {self.config.losses_save_path}")
         
-        # Save predictions
-        self._save_predictions(predictions, predictions_dir)
-        
-        # Save model
-        model_path = predictions_dir / "model.pth"
-        torch.save(self.model.state_dict(), model_path)
-        logger.info(f"Model saved to {model_path}")
-        
-        # Save scripted model (commented out due to TorchScript limitations with custom objects)
-        # scripted_model = torch.jit.script(self.model)
-        # scripted_model_path = predictions_dir / "model_scripted.pt"
-        # scripted_model.save(str(scripted_model_path))
-        # logger.info(f"Scripted model saved to {scripted_model_path}")
-        
-        # Save metrics
-        metrics_df = pd.DataFrame([metrics])
-        metrics_df.to_csv(predictions_dir / "test_metrics.csv", index=False)
-        logger.info(f"Metrics saved to {predictions_dir / 'test_metrics.csv'}")
+        # Save predictions (only if enabled)
+        if self.config.save_predictions:
+            # Create predictions directory
+            predictions_dir = Path(self.config.predictions_dir)
+            predictions_dir.mkdir(exist_ok=True)
+            
+            # Save predictions
+            self._save_predictions(predictions, predictions_dir)
+            
+            # Save model
+            model_path = predictions_dir / "model.pth"
+            torch.save(self.model.state_dict(), model_path)
+            logger.info(f"Model saved to {model_path}")
+            
+            # Save scripted model (commented out due to TorchScript limitations with custom objects)
+            # scripted_model = torch.jit.script(self.model)
+            # scripted_model_path = predictions_dir / "model_scripted.pt"
+            # scripted_model.save(str(scripted_model_path))
+            # logger.info(f"Scripted model saved to {scripted_model_path}")
+            
+            # Save metrics
+            metrics_df = pd.DataFrame([metrics])
+            metrics_df.to_csv(predictions_dir / "test_metrics.csv", index=False)
+            logger.info(f"Metrics saved to {predictions_dir / 'test_metrics.csv'}")
     
     def _save_predictions(self, predictions: Dict[str, np.ndarray], predictions_dir: Path):
         """Save predictions with inverse transformation."""
@@ -1187,9 +1186,9 @@ class ModelTrainer:
             if self.config.log_gpu_memory:
                 self.gpu_monitor.log_gpu_stats("Training start - ")
             
-            # Training loop
-            train_losses = []
-            val_losses = []
+            # Initialize loss lists in instance variables
+            self.train_losses = []
+            self.val_losses = []
             
             logger.info(f"Starting training for {self.config.num_epochs} epochs...")
             
@@ -1198,11 +1197,11 @@ class ModelTrainer:
                 
                 # Train
                 train_loss = self.train_epoch()
-                train_losses.append(train_loss)
+                self.train_losses.append(train_loss)
                 
                 # Validate
                 val_loss = self.validate_epoch()
-                val_losses.append(val_loss)
+                self.val_losses.append(val_loss)
                 
                 # Update learning rate
                 self.scheduler.step(val_loss)
@@ -1219,7 +1218,7 @@ class ModelTrainer:
                     self.gpu_monitor.log_gpu_stats(f"Epoch {epoch+1} - ")
                 
                 # Check for early stopping (only if enabled in config)
-                if self.config.use_early_stopping and len(val_losses) > 10 and val_losses[-1] > min(val_losses[-10:]):
+                if self.config.use_early_stopping and len(self.val_losses) > 10 and self.val_losses[-1] > min(self.val_losses[-10:]):
                     logger.info("Early stopping triggered")
                     break
             
@@ -1237,8 +1236,8 @@ class ModelTrainer:
             self.save_results(predictions, metrics)
             
             return {
-                'train_losses': train_losses,
-                'val_losses': val_losses,
+                'train_losses': self.train_losses,
+                'val_losses': self.val_losses,
                 'predictions': predictions,
                 'metrics': metrics
             }
