@@ -35,11 +35,29 @@ class DataConfig:
         'FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT'
     ])
     
-    # Static columns (can be modified for different inputs)
+    # Fixed static columns to ensure consistency across datasets
     static_columns: List[str] = field(default_factory=lambda: [
         'lat', 'lon', 'area', 'landfrac', 'PFT0', 'PFT1', 'PFT2', 'PFT3', 'PFT4', 'PFT5',
-        'PFT6', 'PFT7', 'PFT8', 'PFT9', 'PFT10', 'PFT11', 'PFT12', 'PFT13', 'PFT14', 'PFT15'
+        'PFT6', 'PFT7', 'PFT8', 'PFT9', 'PFT10', 'PFT11', 'PFT12', 'PFT13', 'PFT14', 'PFT15',
+        'PCT_NAT_PFT_0', 'PCT_NAT_PFT_1', 'PCT_NAT_PFT_2', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_4',
+        'PCT_NAT_PFT_5', 'PCT_NAT_PFT_6', 'PCT_NAT_PFT_7', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9',
+        'PCT_NAT_PFT_10', 'PCT_NAT_PFT_11', 'PCT_NAT_PFT_12', 'PCT_NAT_PFT_13', 'PCT_NAT_PFT_14',
+        'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_NATVEG', 'LANDFRAC_PFT', 'PCT_CLAY_0',
+        'PCT_CLAY_1', 'PCT_CLAY_2', 'PCT_CLAY_3', 'PCT_CLAY_4', 'PCT_CLAY_5', 'PCT_CLAY_6',
+        'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9', 'PCT_SAND_0', 'PCT_SAND_1', 'PCT_SAND_2',
+        'PCT_SAND_3', 'PCT_SAND_4', 'PCT_SAND_5', 'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8',
+        'PCT_SAND_9', 'SCALARAVG_vr_0', 'SCALARAVG_vr_1', 'SCALARAVG_vr_2', 'SCALARAVG_vr_3',
+        'SCALARAVG_vr_4', 'SCALARAVG_vr_5', 'SCALARAVG_vr_6', 'SCALARAVG_vr_7', 'SCALARAVG_vr_8',
+        'SCALARAVG_vr_9', 'SCALARAVG_vr_10', 'SCALARAVG_vr_11', 'SCALARAVG_vr_12', 'SCALARAVG_vr_13',
+        'SCALARAVG_vr_14', 'SOIL_ORDER', 'SOIL_COLOR', 'SNOWDP', 'peatf', 'abm', 'NPP', 'GPP',
+        'HR', 'AR', 'COL_FIRE_CLOSS', 'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
+        'H2OSOI_10CM', 'Y_NPP', 'Y_GPP', 'Y_HR', 'Y_AR', 'Y_COL_FIRE_CLOSS'
     ])
+    
+    # Reorganized input groups for enhanced model
+    static_surface_columns: List[str] = field(default_factory=list)
+    water_group_columns: List[str] = field(default_factory=list)
+    temperature_group_columns: List[str] = field(default_factory=list)
     
     # 2D input features (can be modified for different inputs)
     x_list_columns_2d: List[str] = field(default_factory=lambda: [
@@ -77,6 +95,9 @@ class DataConfig:
     
     # File loading limits (for testing)
     max_files: Optional[int] = None  # Maximum number of files to load (None = all files)
+    
+    # New parameter for filtering NaN in time series
+    filter_time_series_nan: bool = False
 
 
 @dataclass
@@ -605,6 +626,267 @@ def get_dataset1_config() -> TrainingConfigManager:
     return config
 
 
+def get_dataset3_config() -> TrainingConfigManager:
+    """Get configuration for training on Dataset 3 only (3_trendy_case_add_water_variables)."""
+    config = TrainingConfigManager()
+    
+    # Update data config for Dataset 3 only
+    config.update_data_config(
+        data_paths=["/global/cfs/cdirs/m4814/daweigao/3_trendy_case_add_water_variables/dataset"],
+        max_files=None,  # Use all available files
+        train_split=0.8,
+        filter_column=None  # Remove filtering to use all samples
+    )
+    
+    # Update model config for Dataset 3
+    config.update_model_config(
+        lstm_hidden_size=512,
+        static_fc_size=1024,
+        num_tokens=32,
+        token_dim=256,
+        transformer_heads=16,
+        transformer_layers=8,
+        scalar_output_size=5,
+        vector_output_size=len(config.data_config.x_list_columns_1d),
+        matrix_output_size=len(config.data_config.x_list_columns_2d)
+    )
+    
+    # Update training config for Dataset 3
+    config.update_training_config(
+        num_epochs=150,
+        batch_size=32,   # Reduced batch size to handle larger dataset
+        learning_rate=0.001,
+        scalar_loss_weight=1.0,
+        vector_loss_weight=1.0,
+        matrix_loss_weight=1.0,
+        optimizer_type='adam',
+        weight_decay=0.0,
+        use_scheduler=False,
+        use_early_stopping=True,
+        patience=15,
+        min_delta=0.001,
+        device='auto',
+        use_mixed_precision=True,
+        use_amp=True,
+        use_grad_scaler=True,
+        pin_memory=True,
+        num_workers=0,
+        prefetch_factor=None,  # Fixed: must be None when num_workers=0
+        persistent_workers=False,
+        empty_cache_freq=10,
+        max_memory_usage=0.9,
+        memory_efficient_attention=True,
+        log_gpu_memory=True,
+        log_gpu_utilization=True,
+        gpu_monitor_interval=100,
+        save_model=True,
+        model_save_path="dataset3_model.pt",
+        save_losses=True,
+        losses_save_path="dataset3_training_validation_losses.csv",
+        save_predictions=True,
+        predictions_dir="dataset3_predictions",
+        validation_frequency=1,
+        random_seed=42,
+        deterministic=True
+    )
+    
+    return config
+
+
+def get_reorganized_dataset3_config() -> TrainingConfigManager:
+    """Get reorganized configuration for training on Dataset 3 with separated input groups."""
+    config = TrainingConfigManager()
+    
+    # Reorganized data config for Dataset 3 with separated input groups
+    config.update_data_config(
+        data_paths=["/global/cfs/cdirs/m4814/daweigao/3_trendy_case_add_water_variables/dataset"],
+        max_files=None,  # Use all available files
+        train_split=0.8,
+        filter_column=None,  # Remove filtering to use all samples
+        # Time series columns (unchanged)
+        time_series_columns=['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT'],
+        # Static surface columns (geographic, PFT, soil, auxiliary)
+        static_surface_columns=[
+            # Geographic
+            'lat', 'lon', 'area', 'landfrac',
+            # PFTs
+            'PFT0', 'PFT1', 'PFT2', 'PFT3', 'PFT4', 'PFT5', 'PFT6', 'PFT7', 'PFT8', 'PFT9',
+            'PFT10', 'PFT11', 'PFT12', 'PFT13', 'PFT14', 'PFT15',
+            'PCT_NAT_PFT_0', 'PCT_NAT_PFT_1', 'PCT_NAT_PFT_2', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_4',
+            'PCT_NAT_PFT_5', 'PCT_NAT_PFT_6', 'PCT_NAT_PFT_7', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9',
+            'PCT_NAT_PFT_10', 'PCT_NAT_PFT_11', 'PCT_NAT_PFT_12', 'PCT_NAT_PFT_13', 'PCT_NAT_PFT_14',
+            'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_NATVEG', 'LANDFRAC_PFT',
+            # Soil properties
+            'PCT_CLAY_0', 'PCT_CLAY_1', 'PCT_CLAY_2', 'PCT_CLAY_3', 'PCT_CLAY_4', 'PCT_CLAY_5',
+            'PCT_CLAY_6', 'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9',
+            'PCT_SAND_0', 'PCT_SAND_1', 'PCT_SAND_2', 'PCT_SAND_3', 'PCT_SAND_4', 'PCT_SAND_5',
+            'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8', 'PCT_SAND_9',
+            'SCALARAVG_vr_0', 'SCALARAVG_vr_1', 'SCALARAVG_vr_2', 'SCALARAVG_vr_3', 'SCALARAVG_vr_4',
+            'SCALARAVG_vr_5', 'SCALARAVG_vr_6', 'SCALARAVG_vr_7', 'SCALARAVG_vr_8', 'SCALARAVG_vr_9',
+            'SCALARAVG_vr_10', 'SCALARAVG_vr_11', 'SCALARAVG_vr_12', 'SCALARAVG_vr_13', 'SCALARAVG_vr_14',
+            'SOIL_ORDER', 'SOIL_COLOR',
+            # Auxiliary variables
+            'SNOWDP', 'peatf', 'abm', 'GPP', 'HR', 'AR', 'NPP', 'COL_FIRE_CLOSS',
+            'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
+            'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr', 'LAKE_SOILC', 'taf'
+        ],
+        # Water group columns (separate processing)
+        water_group_columns=[
+            'H2OCAN', 'H2OSFC', 'H2OSNO', 'H2OSOI_LIQ', 'H2OSOI_ICE', 'H2OSOI_10CM'
+        ],
+        # Temperature group columns (separate processing)
+        temperature_group_columns=[
+            'T_VEG', 'T10_VALUE', 'TH2OSFC', 'T_GRND', 'T_GRND_R', 'T_GRND_U', 'T_SOISNO', 'T_LAKE', 'TS_TOPO'
+        ],
+        # Enhanced 1D CNP input/output features
+        x_list_columns_1d=['deadcrootc', 'deadstemc', 'tlai', 'leafc', 'frootc', 'totlitc'],
+        y_list_columns_1d=['Y_deadcrootc', 'Y_deadstemc', 'Y_tlai', 'Y_leafc', 'Y_frootc', 'Y_totlitc'],
+        # Enhanced 2D CNP input/output features
+        x_list_columns_2d=['soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr', 'litr1c_vr', 'litr2c_vr', 'litr3c_vr'],
+        y_list_columns_2d=['Y_soil1c_vr', 'Y_soil2c_vr', 'Y_soil3c_vr', 'Y_soil4c_vr', 'Y_litr1c_vr', 'Y_litr2c_vr', 'Y_litr3c_vr']
+    )
+    
+    # Enhanced model config for reorganized Dataset 3
+    config.update_model_config(
+        lstm_hidden_size=512,
+        static_fc_size=1024,
+        fc_hidden_size=128,  # Increased for more complex features
+        num_tokens=32,
+        token_dim=128,  # Fixed token dimension for stability
+        transformer_heads=16,
+        transformer_layers=6,  # More transformer layers
+        scalar_output_size=5,
+        vector_output_size=6,  # Increased for more 1D outputs
+        matrix_output_size=7,  # Increased for more 2D outputs
+        vector_length=16,
+        matrix_rows=18,
+        matrix_cols=10
+    )
+    
+    # Enhanced training config for reorganized Dataset 3
+    config.update_training_config(
+        num_epochs=150,
+        batch_size=32,   # Reduced batch size for larger model
+        learning_rate=0.0005,  # Reduced learning rate for stability
+        scalar_loss_weight=1.0,
+        vector_loss_weight=1.0,
+        matrix_loss_weight=1.0,
+        optimizer_type='adam',
+        weight_decay=1e-4,  # Added weight decay for regularization
+        use_scheduler=True,  # Enable learning rate scheduling
+        scheduler_type='cosine',
+        use_early_stopping=True,
+        patience=20,  # Increased patience for complex model
+        min_delta=0.001,
+        device='auto',
+        use_mixed_precision=True,
+        use_amp=True,
+        use_grad_scaler=True,
+        pin_memory=True,
+        num_workers=0,
+        prefetch_factor=None,
+        persistent_workers=False,
+        empty_cache_freq=10,
+        max_memory_usage=0.9,
+        memory_efficient_attention=True,
+        log_gpu_memory=True,
+        log_gpu_utilization=True,
+        gpu_monitor_interval=100,
+        save_model=True,
+        model_save_path="reorganized_dataset3_model.pt",
+        save_losses=True,
+        losses_save_path="reorganized_dataset3_training_validation_losses.csv",
+        save_predictions=True,
+        predictions_dir="reorganized_dataset3_predictions",
+        validation_frequency=1,
+        random_seed=42,
+        deterministic=True
+    )
+    
+    return config
+
+
+def get_grouped_enhanced_dataset3_config() -> TrainingConfigManager:
+    """Get grouped enhanced configuration for training on Dataset 3 with grouped architecture."""
+    config = TrainingConfigManager()
+    
+    # Data config for Dataset 3 with grouped input structure
+    config.update_data_config(
+        data_paths=["/global/cfs/cdirs/m4814/daweigao/3_trendy_case_add_water_variables/dataset"],
+        max_files=None,
+        train_split=0.8,
+        filter_column=None,
+        # Time series columns (forcing group)
+        time_series_columns=['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT'],
+        # Static surface columns (geographic, PFT, soil properties)
+        static_surface_columns=[
+            # Geographic
+            'lat', 'lon', 'area', 'landfrac',
+            # PFTs
+            'PFT0', 'PFT1', 'PFT2', 'PFT3', 'PFT4', 'PFT5', 'PFT6', 'PFT7', 'PFT8', 'PFT9',
+            'PFT10', 'PFT11', 'PFT12', 'PFT13', 'PFT14', 'PFT15',
+            'PCT_NAT_PFT_0', 'PCT_NAT_PFT_1', 'PCT_NAT_PFT_2', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_4',
+            'PCT_NAT_PFT_5', 'PCT_NAT_PFT_6', 'PCT_NAT_PFT_7', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9',
+            'PCT_NAT_PFT_10', 'PCT_NAT_PFT_11', 'PCT_NAT_PFT_12', 'PCT_NAT_PFT_13', 'PCT_NAT_PFT_14',
+            'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_NATVEG', 'LANDFRAC_PFT',
+            # Soil properties
+            'PCT_CLAY_0', 'PCT_CLAY_1', 'PCT_CLAY_2', 'PCT_CLAY_3', 'PCT_CLAY_4', 'PCT_CLAY_5',
+            'PCT_CLAY_6', 'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9',
+            'PCT_SAND_0', 'PCT_SAND_1', 'PCT_SAND_2', 'PCT_SAND_3', 'PCT_SAND_4', 'PCT_SAND_5',
+            'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8', 'PCT_SAND_9',
+            'SCALARAVG_vr_0', 'SCALARAVG_vr_1', 'SCALARAVG_vr_2', 'SCALARAVG_vr_3', 'SCALARAVG_vr_4',
+            'SCALARAVG_vr_5', 'SCALARAVG_vr_6', 'SCALARAVG_vr_7', 'SCALARAVG_vr_8', 'SCALARAVG_vr_9',
+            'SCALARAVG_vr_10', 'SCALARAVG_vr_11', 'SCALARAVG_vr_12', 'SCALARAVG_vr_13', 'SCALARAVG_vr_14',
+            'SOIL_ORDER', 'SOIL_COLOR', 'SNOWDP', 'peatf', 'abm', 'NPP', 'GPP', 'HR', 'AR', 
+            'COL_FIRE_CLOSS', 'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
+            'H2OSOI_10CM', 'Y_NPP', 'Y_GPP', 'Y_HR', 'Y_AR', 'Y_COL_FIRE_CLOSS'
+        ],
+        # Water group columns
+        water_group_columns=['H2OCAN', 'H2OSFC', 'H2OSNO', 'H2OSOI_LIQ', 'H2OSOI_ICE', 'H2OSOI_10CM'],
+        # Temperature group columns
+        temperature_group_columns=['T_VEG', 'T10_VALUE', 'TH2OSFC', 'T_GRND', 'T_GRND_R', 'T_GRND_U', 'T_SOISNO', 'T_LAKE', 'TS_TOPO'],
+        # 1D CNP columns
+        x_list_columns_1d=['deadcrootc', 'deadstemc', 'tlai', 'leafc', 'frootc', 'totlitc'],
+        y_list_columns_1d=['Y_deadcrootc', 'Y_deadstemc', 'Y_tlai', 'Y_leafc', 'Y_frootc', 'Y_totlitc'],
+        # 2D CNP columns
+        x_list_columns_2d=['soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr', 'litr1c_vr', 'litr2c_vr', 'litr3c_vr'],
+        y_list_columns_2d=['Y_soil1c_vr', 'Y_soil2c_vr', 'Y_soil3c_vr', 'Y_soil4c_vr', 'Y_litr1c_vr', 'Y_litr2c_vr', 'Y_litr3c_vr']
+    )
+    
+    # Enhanced model config for grouped architecture
+    config.update_model_config(
+        lstm_hidden_size=512,
+        fc_hidden_size=256,
+        static_fc_size=256,
+        conv_channels=[64, 128, 256],
+        conv_kernel_size=3,
+        conv_padding=1,
+        num_tokens=8,
+        token_dim=256,
+        transformer_layers=6,
+        transformer_heads=16,
+        scalar_output_size=5,
+        vector_output_size=6,
+        vector_length=16,
+        matrix_output_size=7,
+        matrix_rows=18,
+        matrix_cols=10
+    )
+    
+    # Enhanced training config
+    config.update_training_config(
+        batch_size=32,
+        learning_rate=0.001,
+        num_epochs=100,
+        early_stopping_patience=15,
+        model_save_path="results/grouped_enhanced_dataset3_model.pt",
+        losses_save_path="results/grouped_enhanced_dataset3_losses.csv",
+        predictions_dir="results/grouped_enhanced_dataset3_predictions"
+    )
+    
+    return config
+
+
 def get_dataset2_config() -> TrainingConfigManager:
     """Get configuration for training on Dataset 2 only (1_0.5_degree)."""
     config = TrainingConfigManager()
@@ -673,17 +955,20 @@ def get_dataset2_config() -> TrainingConfigManager:
 
 
 def get_combined_dataset_config() -> TrainingConfigManager:
-    """Get configuration for training on both datasets combined."""
+    """Get configuration for training on all three datasets combined."""
     config = TrainingConfigManager()
     
-    # Update data config for combined dataset (both paths)
+    # Update data config for combined dataset (all three paths) - no file limit
     config.update_data_config(
         data_paths=[
             "/global/cfs/cdirs/m4814/daweigao/0_trendy_case/dataset",
-            "/global/cfs/cdirs/m4814/daweigao/1_0.5_degree/dataset"
+            "/global/cfs/cdirs/m4814/daweigao/1_0.5_degree/dataset",
+            "/global/cfs/cdirs/m4814/daweigao/3_trendy_case_add_water_variables/dataset"
         ],
         max_files=None,  # Use all available files
-        train_split=0.8
+        train_split=0.8,
+        filter_column=None,
+        filter_time_series_nan=True
     )
     
     # Update model config for combined dataset
@@ -699,9 +984,9 @@ def get_combined_dataset_config() -> TrainingConfigManager:
         matrix_output_size=len(config.data_config.x_list_columns_2d)
     )
     
-    # Update training config for combined dataset with comprehensive saving settings
+    # Update training config for combined dataset with 120 epochs
     config.update_training_config(
-        num_epochs=150,  # Set to 150 epochs for consistency
+        num_epochs=120,  # Set to 120 epochs for full training
         batch_size=128,
         learning_rate=0.0005,
         scalar_loss_weight=1.0,
@@ -710,8 +995,8 @@ def get_combined_dataset_config() -> TrainingConfigManager:
         optimizer_type='adam',
         weight_decay=1e-4,
         use_scheduler=False,
-        use_early_stopping=True,
-        patience=15,  # Early stopping patience
+        use_early_stopping=True,  # Enable early stopping for 120-epoch training
+        patience=20,  # Increased patience for longer training
         min_delta=0.001,
         device='cuda',
         use_mixed_precision=True,
