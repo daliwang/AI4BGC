@@ -329,20 +329,20 @@ class DataLoader:
                 if np.isnan(x_array).any():
                     x_array = np.nan_to_num(x_array, nan=0.0)
                 
-                # Pad or truncate to target length
+            # Pad or truncate to target length
                 if len(x_array) > self.data_config.max_time_series_length:
                     x_array = x_array[:self.data_config.max_time_series_length]
-                
-                # Take last N elements
+            
+            # Take last N elements
                 if len(x_array) > self.data_config.time_series_length:
                     x_array = x_array[-self.data_config.time_series_length:]
-                
-                # Pad if shorter
+            
+            # Pad if shorter
                 if len(x_array) < self.data_config.time_series_length:
                     x_array = np.pad(x_array, (0, self.data_config.time_series_length - len(x_array)), 'constant')
-                
+            
                 return x_array
-            else:
+        else:
                 # For None, NaN, empty lists, or other invalid data
                 logger.debug(f"Invalid time series data for column {col}: {type(x)} = {x}")
                 return np.zeros(self.data_config.time_series_length, dtype=np.float32)

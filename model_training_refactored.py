@@ -27,10 +27,12 @@ sys.path.append(str(Path(__file__).parent))
 from config.training_config import (
     get_default_config, get_minimal_config, get_extended_config,
     get_full_model_test_cpu_config, get_full_model_test_gpu_config, 
-    get_full_dataset_config, TrainingConfigManager
+    get_full_dataset_config, get_cnp_model_config, get_cnp_model_config_no_water,
+    TrainingConfigManager
 )
 from data.data_loader import DataLoader
 from models.combined_model import CombinedModel, FlexibleCombinedModel
+from models.cnp_combined_model import CNPCombinedModel
 from training.trainer import ModelTrainer
 
 
@@ -68,6 +70,10 @@ def get_config(config_name: str) -> TrainingConfigManager:
         return get_full_model_test_gpu_config()
     elif config_name == 'full_dataset':
         return get_full_dataset_config()
+    elif config_name == 'cnp':
+        return get_cnp_model_config(include_water=True)
+    elif config_name == 'cnp_no_water':
+        return get_cnp_model_config(include_water=False)
     else:
         raise ValueError(f"Unknown configuration: {config_name}")
 
@@ -121,7 +127,7 @@ def main():
         'config_name', 
         nargs='?', 
         default='default',
-        choices=['default', 'minimal', 'extended', 'custom', 'full_model_test_cpu', 'full_model_test_gpu', 'full_dataset'],
+        choices=['default', 'minimal', 'extended', 'custom', 'full_model_test_cpu', 'full_model_test_gpu', 'full_dataset', 'cnp', 'cnp_no_water'],
         help='Configuration to use for training'
     )
     parser.add_argument(
@@ -219,12 +225,23 @@ def main():
             actual_2d_channels = len(data_info['x_list_columns_2d'])
             logger.info(f"Detected actual 2D channels: {actual_2d_channels}")
         
-        model = CombinedModel(
-            config.model_config,
-            data_info,
-            actual_1d_size=actual_1d_size,
-            actual_2d_channels=actual_2d_channels
-        )
+        # Choose model based on configuration
+        if args.config_name in ['cnp', 'cnp_no_water']:
+            include_water = args.config_name == 'cnp'
+            model = CNPCombinedModel(
+                config.model_config,
+                data_info,
+                include_water=include_water,
+                actual_1d_size=actual_1d_size,
+                actual_2d_channels=actual_2d_channels
+            )
+        else:
+            model = CombinedModel(
+                config.model_config,
+                data_info,
+                actual_1d_size=actual_1d_size,
+                actual_2d_channels=actual_2d_channels
+            )
         
         # Update training config with output directory
         config.training_config.model_save_path = str(output_dir / "model.pt")

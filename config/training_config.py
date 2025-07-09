@@ -1024,3 +1024,232 @@ def get_combined_dataset_config() -> TrainingConfigManager:
     )
     
     return config 
+
+
+def get_cnp_model_config(include_water: bool = True) -> TrainingConfigManager:
+    """
+    Get CNP model configuration based on CNP_IO_list1.txt structure.
+    
+    Args:
+        include_water: Whether to include water variables in both input and output
+        
+    Returns:
+        TrainingConfigManager with CNP model configuration
+    """
+    config = TrainingConfigManager()
+    
+    # Data paths for Dataset 3
+    config.update_data_config(
+        data_paths=["/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trend_1_data_CNP"],
+        max_files=None,  # Use all available files
+        train_split=0.8,
+        filter_column=None,  # Remove filtering to use all samples
+        time_series_length=240,  # 20 years * 12 months
+        max_time_series_length=240,
+        max_1d_length=16,
+        max_2d_rows=10,  # Soil layers
+        max_2d_cols=10,  # Soil layers
+    )
+    
+    # Time series variables (6 variables)
+    config.update_data_config(
+        time_series_columns=['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT']
+    )
+    
+    # Surface Properties (39 variables) - Geographic, Soil Phosphorus Forms, PFT Coverage, Soil Texture
+    surface_properties = [
+        # Geographic (7 variables)
+        'lat', 'lon', 'area', 'landfrac', 'Latitude', 'Longitude', 'AREA',
+        # Soil Phosphorus Forms (4 variables)
+        'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
+        # PFT Coverage (20 variables)
+        'PCT_NAT_PFT0', 'PCT_NAT_PFT1', 'PCT_NAT_PFT2', 'PCT_NAT_PFT3', 'PCT_NAT_PFT4', 
+        'PCT_NAT_PFT5', 'PCT_NAT_PFT6', 'PCT_NAT_PFT7', 'PCT_NAT_PFT8', 'PCT_NAT_PFT9', 
+        'PCT_NAT_PFT10', 'PCT_NAT_PFT11', 'PCT_NAT_PFT12', 'PCT_NAT_PFT13', 'PCT_NAT_PFT14', 
+        'PCT_NAT_PFT15', 'PCT_NAT_PFT16', 'PCT_NAT_PFT17', 'LANDFRAC_PFT', 'PCT_NATVEG', 'SNOWDP',
+        # Soil Texture (20 variables)
+        'CLAY_1_', 'CLAY_2_', 'CLAY_3_', 'CLAY_4_', 'CLAY_5_', 'CLAY_6_', 'CLAY_7_', 'CLAY_8_', 'CLAY_9_', 'CLAY_10_',
+        'SAND_1_', 'SAND_2_', 'SAND_3_', 'SAND_4_', 'SAND_5_', 'SAND_6_', 'SAND_7_', 'SAND_8_', 'SAND_9_', 'SAND_10_'
+    ]
+    
+    # PFT Parameters (44 variables)
+    pft_parameters = [
+        'pft_deadwdcn', 'pft_frootcn', 'pft_leafcn', 'pft_lflitcn', 'pft_livewdcn',
+        'pft_c3psn', 'pft_croot_stem', 'pft_crop', 'pft_dleaf', 'pft_dsladlai', 'pft_evergreen', 
+        'pft_fcur', 'pft_flivewd', 'pft_flnr', 'pft_fr_fcel', 'pft_fr_flab', 'pft_fr_flig', 
+        'pft_froot_leaf', 'pft_grperc', 'pft_grpnow', 'pft_leaf_long', 'pft_lf_fcel', 
+        'pft_lf_flab', 'pft_lf_flig', 'pft_rholnir', 'pft_rholvis', 'pft_rhosnir', 'pft_rhosvis', 
+        'pft_roota_par', 'pft_rootb_par', 'pft_rootprof_beta', 'pft_season_decid', 'pft_slatop', 
+        'pft_smpsc', 'pft_smpso', 'pft_stem_leaf', 'pft_stress_decid', 'pft_taulnir', 
+        'pft_taulvis', 'pft_tausnir', 'pft_tausvis', 'pft_woody', 'pft_xl', 'pft_z0mr'
+    ]
+    
+    # Water variables (5 variables - H2OSOI_10CM excluded)
+    water_variables = ['H2OSOI_1_', 'H2OSOI_2_', 'H2OSOI_3_', 'H2OSOI_4_', 'H2OSOI_5_', 'H2OSOI_6_']
+    
+    # Scalar variables (5 variables)
+    scalar_variables = ['GPP', 'NPP', 'AR', 'HR', 'LAI']
+    
+    # 1D variables (16 variables - excluded variables removed)
+    variables_1d = [
+        'cwdp', 'deadcrootc', 'deadcrootn', 'deadcrootp', 'deadstemc', 'deadstemn', 'deadstemp',
+        'frootc', 'frootc_storage', 'leafc', 'leafc_storage', 'totcolp', 'totlitc', 'totvegc'
+    ]
+    
+    # 2D variables (67 variables - soil properties moved from surface properties, soil texture moved to surface properties)
+    variables_2d = [
+        # Litter Variables (16)
+        'LITR1C_1C_vr', 'LITR1C_2C_vr', 'LITR1C_3C_vr', 'LITR1C_4C_vr',
+        'LITR1N_1N_vr', 'LITR1N_2N_vr', 'LITR1N_3N_vr', 'LITR1N_4N_vr',
+        'LITR1P_1P_vr', 'LITR1P_2P_vr', 'LITR1P_3P_vr', 'LITR1P_4P_vr',
+        'LITR2C_1C_vr', 'LITR2C_2C_vr', 'LITR2C_3C_vr', 'LITR2C_4C_vr',
+        
+        # Soil Properties (68 variables)
+        'SOILC_1C', 'SOILC_2C', 'SOILC_3C', 'SOILC_4C',
+        'SOILN_1N', 'SOILN_2N', 'SOILN_3N', 'SOILN_4N',
+        'SOILP_1P', 'SOILP_2P', 'SOILP_3P', 'SOILP_4P',
+        'SOILC_1C_vr', 'SOILC_2C_vr', 'SOILC_3C_vr', 'SOILC_4C_vr',
+        'SOILN_1N_vr', 'SOILN_2N_vr', 'SOILN_3N_vr', 'SOILN_4N_vr',
+        'SOILP_1P_vr', 'SOILP_2P_vr', 'SOILP_3P_vr', 'SOILP_4P_vr',
+        
+        # Soil Carbon layers (40 variables)
+        'SOILC_1C_1_', 'SOILC_1C_2_', 'SOILC_1C_3_', 'SOILC_1C_4_', 'SOILC_1C_5_', 'SOILC_1C_6_', 'SOILC_1C_7_', 'SOILC_1C_8_', 'SOILC_1C_9_', 'SOILC_1C_10_',
+        'SOILC_2C_1_', 'SOILC_2C_2_', 'SOILC_2C_3_', 'SOILC_2C_4_', 'SOILC_2C_5_', 'SOILC_2C_6_', 'SOILC_2C_7_', 'SOILC_2C_8_', 'SOILC_2C_9_', 'SOILC_2C_10_',
+        'SOILC_3C_1_', 'SOILC_3C_2_', 'SOILC_3C_3_', 'SOILC_3C_4_', 'SOILC_3C_5_', 'SOILC_3C_6_', 'SOILC_3C_7_', 'SOILC_3C_8_', 'SOILC_3C_9_', 'SOILC_3C_10_',
+        'SOILC_4C_1_', 'SOILC_4C_2_', 'SOILC_4C_3_', 'SOILC_4C_4_', 'SOILC_4C_5_', 'SOILC_4C_6_', 'SOILC_4C_7_', 'SOILC_4C_8_', 'SOILC_4C_9_', 'SOILC_4C_10_',
+        
+        # Soil Nitrogen layers (40 variables)
+        'SOILN_1N_1_', 'SOILN_1N_2_', 'SOILN_1N_3_', 'SOILN_1N_4_', 'SOILN_1N_5_', 'SOILN_1N_6_', 'SOILN_1N_7_', 'SOILN_1N_8_', 'SOILN_1N_9_', 'SOILN_1N_10_',
+        'SOILN_2N_1_', 'SOILN_2N_2_', 'SOILN_2N_3_', 'SOILN_2N_4_', 'SOILN_2N_5_', 'SOILN_2N_6_', 'SOILN_2N_7_', 'SOILN_2N_8_', 'SOILN_2N_9_', 'SOILN_2N_10_',
+        'SOILN_3N_1_', 'SOILN_3N_2_', 'SOILN_3N_3_', 'SOILN_3N_4_', 'SOILN_3N_5_', 'SOILN_3N_6_', 'SOILN_3N_7_', 'SOILN_3N_8_', 'SOILN_3N_9_', 'SOILN_3N_10_',
+        'SOILN_4N_1_', 'SOILN_4N_2_', 'SOILN_4N_3_', 'SOILN_4N_4_', 'SOILN_4N_5_', 'SOILN_4N_6_', 'SOILN_4N_7_', 'SOILN_4N_8_', 'SOILN_4N_9_', 'SOILN_4N_10_',
+        
+        # Soil Phosphorus layers (40 variables)
+        'SOILP_1P_1_', 'SOILP_1P_2_', 'SOILP_1P_3_', 'SOILP_1P_4_', 'SOILP_1P_5_', 'SOILP_1P_6_', 'SOILP_1P_7_', 'SOILP_1P_8_', 'SOILP_1P_9_', 'SOILP_1P_10_',
+        'SOILP_2P_1_', 'SOILP_2P_2_', 'SOILP_2P_3_', 'SOILP_2P_4_', 'SOILP_2P_5_', 'SOILP_2P_6_', 'SOILP_2P_7_', 'SOILP_2P_8_', 'SOILP_2P_9_', 'SOILP_2P_10_',
+        'SOILP_3P_1_', 'SOILP_3P_2_', 'SOILP_3P_3_', 'SOILP_3P_4_', 'SOILP_3P_5_', 'SOILP_3P_6_', 'SOILP_3P_7_', 'SOILP_3P_8_', 'SOILP_3P_9_', 'SOILP_3P_10_',
+        'SOILP_4P_1_', 'SOILP_4P_2_', 'SOILP_4P_3_', 'SOILP_4P_4_', 'SOILP_4P_5_', 'SOILP_4P_6_', 'SOILP_4P_7_', 'SOILP_4P_8_', 'SOILP_4P_9_', 'SOILP_4P_10_'
+    ]
+    
+    # Output variables
+    output_water = ['Y_H2OSOI_1_', 'Y_H2OSOI_2_', 'Y_H2OSOI_3_', 'Y_H2OSOI_4_', 'Y_H2OSOI_5_', 'Y_H2OSOI_6_']
+    output_temperature = ['Y_T_GRND_R', 'Y_T_GRND_U', 'Y_T_LAKE', 'Y_T_SOISNO', 'Y_T_GRND_1_', 'Y_T_GRND_2_', 'Y_T_GRND_3_']
+    output_scalar = ['Y_GPP', 'Y_NPP', 'Y_AR', 'Y_HR', 'Y_LAI']
+    output_1d = [
+        'Y_TS_TOPO', 'Y_cwdp', 'Y_deadcrootc', 'Y_deadcrootn', 'Y_deadcrootp',
+        'Y_deadstemc', 'Y_deadstemn', 'Y_deadstemp', 'Y_frootc', 'Y_frootc_storage',
+        'Y_leafc', 'Y_leafc_storage', 'Y_totcolp', 'Y_totlitc', 'Y_totvegc'
+    ]
+    output_2d = [
+        # Litter Variables (16)
+        'Y_LITR1C_1C_vr', 'Y_LITR1C_2C_vr', 'Y_LITR1C_3C_vr', 'Y_LITR1C_4C_vr',
+        'Y_LITR1N_1N_vr', 'Y_LITR1N_2N_vr', 'Y_LITR1N_3N_vr', 'Y_LITR1N_4N_vr',
+        'Y_LITR1P_1P_vr', 'Y_LITR1P_2P_vr', 'Y_LITR1P_3P_vr', 'Y_LITR1P_4P_vr',
+        'Y_LITR2C_1C_vr', 'Y_LITR2C_2C_vr', 'Y_LITR2C_3C_vr', 'Y_LITR2C_4C_vr',
+        # Soil Properties (12)
+        'Y_SOILC_1C_vr', 'Y_SOILC_2C_vr', 'Y_SOILC_3C_vr', 'Y_SOILC_4C_vr',
+        'Y_SOILN_1N_vr', 'Y_SOILN_2N_vr', 'Y_SOILN_3N_vr', 'Y_SOILN_4N_vr',
+        'Y_SOILP_1P_vr', 'Y_SOILP_2P_vr', 'Y_SOILP_3P_vr', 'Y_SOILP_4P_vr'
+    ]
+    
+    # Configure input variables based on water inclusion
+    if include_water:
+        # Include water variables
+        config.update_data_config(
+            static_columns=surface_properties,
+            x_list_columns_1d=water_variables + scalar_variables + variables_1d,
+            x_list_columns_2d=variables_2d,
+            y_list_columns_1d=output_water + output_scalar + output_1d,
+            y_list_columns_2d=output_2d
+        )
+    else:
+        # Exclude water variables
+        config.update_data_config(
+            static_columns=surface_properties,
+            x_list_columns_1d=scalar_variables + variables_1d,
+            x_list_columns_2d=variables_2d,
+            y_list_columns_1d=output_scalar + output_1d,
+            y_list_columns_2d=output_2d
+        )
+    
+    # Model configuration for CNP architecture
+    config.update_model_config(
+        # LSTM for time series (6 variables, 20 years)
+        lstm_hidden_size=128,
+        
+        # FC for surface properties (39 variables - including soil texture)
+        static_fc_size=128,
+        
+        # FC for PFT parameters (44 variables) - separate from surface properties
+        fc_hidden_size=128,
+        
+        # CNN for 2D variables (67 variables - soil texture moved to surface properties)
+        conv_channels=[32, 64, 128, 256],
+        conv_kernel_size=3,
+        conv_padding=1,
+        
+        # Transformer parameters
+        num_tokens=8,
+        token_dim=128,
+        transformer_layers=4,
+        transformer_heads=8,
+        
+        # Output dimensions
+        scalar_output_size=5,  # Y_GPP, Y_NPP, Y_AR, Y_HR, Y_LAI
+        vector_output_size=16 if include_water else 15,  # 1D variables (water + others)
+        vector_length=16,
+        matrix_output_size=28,  # 2D variables
+        matrix_rows=10,
+        matrix_cols=10
+    )
+    
+    # Training configuration
+    config.update_training_config(
+        num_epochs=100,
+        batch_size=32,
+        learning_rate=0.001,
+        
+        # Loss weights for different output types
+        scalar_loss_weight=1.0,
+        vector_loss_weight=1.0,
+        matrix_loss_weight=1.0,
+        
+        # Optimizer
+        optimizer_type='adamw',
+        weight_decay=0.01,
+        
+        # Learning rate scheduler
+        use_scheduler=True,
+        scheduler_type='cosine',
+        
+        # Early stopping
+        use_early_stopping=True,
+        patience=15,
+        min_delta=0.001,
+        
+        # Device and optimization
+        device='auto',
+        use_mixed_precision=True,
+        use_amp=True,
+        use_grad_scaler=True,
+        
+        # Logging
+        save_model=True,
+        model_save_path="cnp_model.pt",
+        save_losses=True,
+        losses_save_path="cnp_training_losses.csv",
+        save_predictions=True,
+        predictions_dir="cnp_predictions"
+    )
+    
+    return config
+
+
+def get_cnp_model_config_no_water() -> TrainingConfigManager:
+    """
+    Get CNP model configuration without water variables.
+    
+    Returns:
+        TrainingConfigManager with CNP model configuration (no water)
+    """
+    return get_cnp_model_config(include_water=False) 

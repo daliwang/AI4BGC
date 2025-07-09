@@ -291,14 +291,14 @@ class ModelTrainer:
         progress_bar = tqdm(train_loader, desc="Training")
         
         for batch_idx, (time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d) in enumerate(progress_bar):
-            # Move data to device
-            time_series = time_series.to(self.device, non_blocking=True)
-            static = static.to(self.device, non_blocking=True)
-            target = target.to(self.device, non_blocking=True)
-            list_1d = list_1d.to(self.device, non_blocking=True)
-            list_2d = list_2d.to(self.device, non_blocking=True)
-            y_list_1d = y_list_1d.to(self.device, non_blocking=True)
-            y_list_2d = y_list_2d.to(self.device, non_blocking=True)
+            # Move data to device and ensure contiguous
+            time_series = time_series.to(self.device, non_blocking=True).contiguous()
+            static = static.to(self.device, non_blocking=True).contiguous()
+            target = target.to(self.device, non_blocking=True).contiguous()
+            list_1d = list_1d.to(self.device, non_blocking=True).contiguous()
+            list_2d = list_2d.to(self.device, non_blocking=True).contiguous()
+            y_list_1d = y_list_1d.to(self.device, non_blocking=True).contiguous()
+            y_list_2d = y_list_2d.to(self.device, non_blocking=True).contiguous()
             
             # Zero gradients
             self.optimizer.zero_grad()
@@ -306,6 +306,22 @@ class ModelTrainer:
             # Forward pass with mixed precision
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
+                    # Ensure time series data is contiguous
+                    if not time_series.is_contiguous():
+                        logger.warning("Time series tensor is not contiguous, making it contiguous")
+                        time_series = time_series.contiguous()
+                    
+                    # Validate time series tensor shape
+                    if time_series.dim() != 3:
+                        logger.error(f"Time series tensor has wrong dimensions: {time_series.shape}, expected 3D")
+                        raise ValueError(f"Time series tensor has wrong dimensions: {time_series.shape}")
+                    
+                    if time_series.size(1) == 0:
+                        logger.error(f"Time series tensor has zero sequence length: {time_series.shape}")
+                        raise ValueError(f"Time series tensor has zero sequence length: {time_series.shape}")
+                    
+                    logger.debug(f"Time series tensor shape: {time_series.shape}")
+                    
                     outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
@@ -326,6 +342,11 @@ class ModelTrainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
+                # Ensure time series data is contiguous
+                if not time_series.is_contiguous():
+                    logger.warning("Time series tensor is not contiguous, making it contiguous")
+                    time_series = time_series.contiguous()
+                
                 outputs = self.model(
                     time_series, static, list_1d, list_2d
                 )
@@ -424,18 +445,34 @@ class ModelTrainer:
             progress_bar = tqdm(val_loader, desc="Validation")
             
             for batch_idx, (time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d) in enumerate(progress_bar):
-                # Move data to device
-                time_series = time_series.to(self.device, non_blocking=True)
-                static = static.to(self.device, non_blocking=True)
-                target = target.to(self.device, non_blocking=True)
-                list_1d = list_1d.to(self.device, non_blocking=True)
-                list_2d = list_2d.to(self.device, non_blocking=True)
-                y_list_1d = y_list_1d.to(self.device, non_blocking=True)
-                y_list_2d = y_list_2d.to(self.device, non_blocking=True)
+                # Move data to device and ensure contiguous
+                time_series = time_series.to(self.device, non_blocking=True).contiguous()
+                static = static.to(self.device, non_blocking=True).contiguous()
+                target = target.to(self.device, non_blocking=True).contiguous()
+                list_1d = list_1d.to(self.device, non_blocking=True).contiguous()
+                list_2d = list_2d.to(self.device, non_blocking=True).contiguous()
+                y_list_1d = y_list_1d.to(self.device, non_blocking=True).contiguous()
+                y_list_2d = y_list_2d.to(self.device, non_blocking=True).contiguous()
                 
                 # Forward pass with mixed precision
                 if self.use_amp:
                     with torch.amp.autocast('cuda'):
+                        # Ensure time series data is contiguous
+                        if not time_series.is_contiguous():
+                            logger.warning("Time series tensor is not contiguous, making it contiguous")
+                            time_series = time_series.contiguous()
+                        
+                        # Validate time series tensor shape
+                        if time_series.dim() != 3:
+                            logger.error(f"Time series tensor has wrong dimensions: {time_series.shape}, expected 3D")
+                            raise ValueError(f"Time series tensor has wrong dimensions: {time_series.shape}")
+                        
+                        if time_series.size(1) == 0:
+                            logger.error(f"Time series tensor has zero sequence length: {time_series.shape}")
+                            raise ValueError(f"Time series tensor has zero sequence length: {time_series.shape}")
+                        
+                        logger.debug(f"Time series tensor shape: {time_series.shape}")
+                        
                         outputs = self.model(
                             time_series, static, list_1d, list_2d
                         )
@@ -451,6 +488,11 @@ class ModelTrainer:
                             target, y_list_1d, y_list_2d
                         )
                 else:
+                    # Ensure time series data is contiguous
+                    if not time_series.is_contiguous():
+                        logger.warning("Time series tensor is not contiguous, making it contiguous")
+                        time_series = time_series.contiguous()
+                    
                     outputs = self.model(
                         time_series, static, list_1d, list_2d
                     )
@@ -813,14 +855,14 @@ class ModelTrainer:
         
         with torch.no_grad():
             for time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d in eval_loader:
-                # Move to device
-                time_series = time_series.to(self.device, non_blocking=True)
-                static = static.to(self.device, non_blocking=True)
-                target = target.to(self.device, non_blocking=True)
-                list_1d = list_1d.to(self.device, non_blocking=True)
-                list_2d = list_2d.to(self.device, non_blocking=True)
-                y_list_1d = y_list_1d.to(self.device, non_blocking=True)
-                y_list_2d = y_list_2d.to(self.device, non_blocking=True)
+                # Move to device and ensure contiguous
+                time_series = time_series.to(self.device, non_blocking=True).contiguous()
+                static = static.to(self.device, non_blocking=True).contiguous()
+                target = target.to(self.device, non_blocking=True).contiguous()
+                list_1d = list_1d.to(self.device, non_blocking=True).contiguous()
+                list_2d = list_2d.to(self.device, non_blocking=True).contiguous()
+                y_list_1d = y_list_1d.to(self.device, non_blocking=True).contiguous()
+                y_list_2d = y_list_2d.to(self.device, non_blocking=True).contiguous()
                 
                 # Forward pass with mixed precision
                 if self.use_amp:
@@ -1021,25 +1063,25 @@ class ModelTrainer:
             # Create predictions directory
             predictions_dir = Path(self.config.predictions_dir)
             predictions_dir.mkdir(exist_ok=True)
-            
-            # Save predictions
-            self._save_predictions(predictions, predictions_dir)
-            
-            # Save model
-            model_path = predictions_dir / "model.pth"
-            torch.save(self.model.state_dict(), model_path)
-            logger.info(f"Model saved to {model_path}")
-            
-            # Save scripted model (commented out due to TorchScript limitations with custom objects)
-            # scripted_model = torch.jit.script(self.model)
-            # scripted_model_path = predictions_dir / "model_scripted.pt"
-            # scripted_model.save(str(scripted_model_path))
-            # logger.info(f"Scripted model saved to {scripted_model_path}")
-            
-            # Save metrics
-            metrics_df = pd.DataFrame([metrics])
-            metrics_df.to_csv(predictions_dir / "test_metrics.csv", index=False)
-            logger.info(f"Metrics saved to {predictions_dir / 'test_metrics.csv'}")
+        
+        # Save predictions
+        self._save_predictions(predictions, predictions_dir)
+        
+        # Save model
+        model_path = predictions_dir / "model.pth"
+        torch.save(self.model.state_dict(), model_path)
+        logger.info(f"Model saved to {model_path}")
+        
+        # Save scripted model (commented out due to TorchScript limitations with custom objects)
+        # scripted_model = torch.jit.script(self.model)
+        # scripted_model_path = predictions_dir / "model_scripted.pt"
+        # scripted_model.save(str(scripted_model_path))
+        # logger.info(f"Scripted model saved to {scripted_model_path}")
+        
+        # Save metrics
+        metrics_df = pd.DataFrame([metrics])
+        metrics_df.to_csv(predictions_dir / "test_metrics.csv", index=False)
+        logger.info(f"Metrics saved to {predictions_dir / 'test_metrics.csv'}")
     
     def _save_predictions(self, predictions: Dict[str, np.ndarray], predictions_dir: Path):
         """Save predictions with inverse transformation."""
@@ -1190,6 +1232,10 @@ class ModelTrainer:
             self.train_losses = []
             self.val_losses = []
             
+            # Initialize early stopping variables
+            self.best_val_loss = float('inf')
+            self.patience_counter = 0
+            
             logger.info(f"Starting training for {self.config.num_epochs} epochs...")
             
             for epoch in range(self.config.num_epochs):
@@ -1218,7 +1264,8 @@ class ModelTrainer:
                     self.gpu_monitor.log_gpu_stats(f"Epoch {epoch+1} - ")
                 
                 # Check for early stopping (only if enabled in config)
-                if self.config.use_early_stopping and len(self.val_losses) > 10 and self.val_losses[-1] > min(self.val_losses[-10:]):
+                if self.config.use_early_stopping:
+                    if self._check_early_stopping(val_loss):
                     logger.info("Early stopping triggered")
                     break
             
