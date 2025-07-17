@@ -62,32 +62,26 @@ class CombinedModel(nn.Module):
         """Calculate input dimensions based on data info."""
         # Time series input size
         self.lstm_input_size = len(self.data_info['time_series_columns'])
-        
         # Static input size
         self.static_input_size = len(self.data_info['static_columns'])
-        
         # 1D input size - use actual size if provided, otherwise calculate from config
         if self.actual_1d_size is not None:
             self.list_1d_input_size = self.actual_1d_size
             logger.info(f"Using actual 1D input size: {self.actual_1d_size}")
         else:
-            self.list_1d_input_size = len(self.data_info['x_list_columns_1d']) * self.model_config.vector_length
-        
+            self.list_1d_input_size = len(self.data_info.get('variables_1d_pft', [])) * self.model_config.vector_length
         # 2D input size - use actual channels if provided, otherwise calculate from config
         if self.actual_2d_channels is not None:
             self.list_2d_input_channels = self.actual_2d_channels
             logger.info(f"Using actual 2D channels: {self.actual_2d_channels}")
         else:
             self.list_2d_input_channels = len(self.data_info['x_list_columns_2d'])
-        
         # 2D total size
         self.list_2d_input_size = self.list_2d_input_channels * self.model_config.matrix_rows * self.model_config.matrix_cols
-        
         logger.info(f"Input dimensions - LSTM: {self.lstm_input_size}, Static: {self.static_input_size}, "
                    f"1D: {self.list_1d_input_size}, 2D: {self.list_2d_input_size} (channels: {self.list_2d_input_channels})")
-        
         # Log the actual data structure for debugging
-        logger.info(f"1D columns: {self.data_info['x_list_columns_1d']}")
+        logger.info(f"1D columns: {self.data_info.get('variables_1d_pft', [])}")
         logger.info(f"2D columns: {self.data_info['x_list_columns_2d']}")
         logger.info(f"Vector length config: {self.model_config.vector_length}")
     

@@ -6,6 +6,7 @@ import psutil
 import logging
 from typing import Dict, Any
 import time
+import pynvml
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +46,12 @@ class GPUMonitor:
     def _get_gpu_utilization(self) -> float:
         """Get GPU utilization percentage."""
         try:
-            import pynvml
+
             pynvml.nvmlInit()
+            # Check for None index
+            if not hasattr(self.device, 'index') or self.device.index is None:
+                logger.warning("GPU device index is None. Skipping GPU utilization monitoring.")
+                return 0.0
             handle = pynvml.nvmlDeviceGetHandleByIndex(self.device.index)
             util = pynvml.nvmlDeviceGetUtilizationRates(handle)
             return util.gpu

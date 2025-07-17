@@ -14,15 +14,16 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Any, Callable
 from sklearn.metrics import mean_squared_error
-import matplotlib.pyplot as plt
 from pathlib import Path
 import time
 from tqdm import tqdm
 import warnings
 from torch.utils.data import TensorDataset, DataLoader
+import matplotlib.pyplot as plt
 
-from config.training_config import TrainingConfig
+# from config.training_config import TrainingConfig  # Uncomment if TrainingConfig is defined
 from models.combined_model import CombinedModel, FlexibleCombinedModel
+from models.cnp_combined_model import CNPCombinedModel
 
 # Import GPU monitoring
 from utils.gpu_monitor import GPUMonitor, log_memory_usage
@@ -38,7 +39,7 @@ class ModelTrainer:
     data preparation, model training, validation, and saving results.
     """
     
-    def __init__(self, training_config: TrainingConfig, model: nn.Module, 
+    def __init__(self, training_config: Any, model: nn.Module, 
                  train_data: Dict[str, Any], test_data: Dict[str, Any],
                  scalers: Dict[str, Any], data_info: Dict[str, Any]):
         """
@@ -53,11 +54,22 @@ class ModelTrainer:
             data_info: Information about the data structure
         """
         self.config = training_config
+        self.device = self.config.get_device()
         self.model = model
         self.train_data = train_data
         self.test_data = test_data
         self.scalers = scalers
         self.data_info = data_info
+
+        # --- ENFORCE COLUMN ORDER CONSISTENCY ---
+        # These lists should be used everywhere for model input/output order
+        self.scalar_columns = self.data_info.get('x_list_scalar_columns', [])
+        self.y_scalar_columns = self.data_info.get('y_list_scalar_columns', [])
+        self.variables_1d_pft_columns = self.data_info.get('variables_1d_pft', [])  # Canonical 1D PFT variable list
+        self.y_pft_1d_columns = self.data_info.get('y_list_columns_1d', [])
+        self.variables_2d_soil_columns = self.data_info.get('x_list_columns_2d', [])
+        self.y_soil_2d_columns = self.data_info.get('y_list_columns_2d', [])
+        self.pft_param_columns = self.data_info.get('pft_param_columns', [])
         
         # Set random seeds for reproducibility
         if hasattr(self.config, 'random_seed'):
@@ -74,24 +86,49 @@ class ModelTrainer:
             logger.info("Deterministic behavior enabled")
         
         # Ensure all arrays in train/test splits have the same number of samples
+        final_tensor_keys = [
+            'time_series', 'static', 'pft_param', 'scalar',
+            'variables_1d_pft', 'variables_2d_soil',
+            'y_scalar', 'y_pft_1d', 'y_soil_2d',
+            'water', 'y_water'
+        ]
+
+        # --- DEBUG: Force small batch size and minimal DataLoader workers for OOM debugging ---
+        # print the shape of the tensors in the train and test data
+        # print(f"[DEBUG] train_data['time_series'].shape: {self.train_data['time_series'].shape}")
+        # print(f"[DEBUG] train_data['static'].shape: {self.train_data['static'].shape}")
+        # print(f"[DEBUG] train_data['pft_param'].shape: {self.train_data['pft_param'].shape}")
+        # print(f"[DEBUG] train_data['scalar'].shape: {self.train_data['scalar'].shape}")
+        # print(f"[DEBUG] train_data['variables_1d_pft'].shape: {self.train_data['variables_1d_pft'].shape}")
+        # print(f"[DEBUG] train_data['variables_2d_soil'].shape: {self.train_data['variables_2d_soil'].shape}")
+
+        # print(f"[DEBUG] test_data['time_series'].shape: {self.test_data['time_series'].shape}")
+        # print(f"[DEBUG] test_data['static'].shape: {self.test_data['static'].shape}")
+        # print(f"[DEBUG] test_data['pft_param'].shape: {self.test_data['pft_param'].shape}")
+        # print(f"[DEBUG] test_data['scalar'].shape: {self.test_data['scalar'].shape}")
+        # print(f"[DEBUG] test_data['variables_1d_pft'].shape: {self.test_data['variables_1d_pft'].shape}")
+        # print(f"[DEBUG] test_data['variables_2d_soil'].shape: {self.test_data['variables_2d_soil'].shape}")
+
+        # --- DEBUG: Force small batch size and minimal DataLoader workers for OOM debugging ---
+
         for split_name in ['train', 'test']:
             split = getattr(self, f'{split_name}_data')
-            # Find min length
-            lengths = [v.shape[0] for k, v in split.items() if isinstance(v, torch.Tensor)]
-            for k, v in split.items():
-                if isinstance(v, torch.Tensor) and v.shape[0] != min(lengths):
-                    split[k] = v[:min(lengths)]
-            # For dicts (list_1d, list_2d)
-            for k in ['list_1d', 'list_2d']:
-                if k in split and isinstance(split[k], dict):
-                    dict_lengths = [vv.shape[0] for vv in split[k].values()]
-                    min_dict_len = min(dict_lengths) if dict_lengths else min(lengths)
-                    for kk, vv in split[k].items():
-                        if vv.shape[0] != min_dict_len:
-                            split[k][kk] = vv[:min_dict_len]
-        
-        # Setup device
-        self.device = self.config.get_device()
+            keys_present = [k for k in final_tensor_keys if k in split and isinstance(split[k], torch.Tensor)]
+            if not keys_present:
+                continue
+            min_length = min(split[k].shape[0] for k in keys_present)
+            for k in keys_present:
+                if split[k].shape[0] != min_length:
+                    split[k] = split[k][:min_length]
+
+        # Move all final tensors to device (for both train and test splits)
+        for split_name in ['train', 'test']:
+            split = getattr(self, f'{split_name}_data')
+            for key in final_tensor_keys:
+                if key in split:
+                    split[key] = split[key].to(self.device)
+
+        # Setup device for model
         self.model.to(self.device)
         
         # Initialize GPU monitoring
@@ -130,18 +167,6 @@ class ModelTrainer:
         self.best_val_loss = float('inf')
         self.patience_counter = 0
         
-        # Prepare y_list_1d and y_list_2d as tensors for train and test
-        self.train_data['y_list_1d'] = self._concat_list_columns(self.train_data['list_1d'], self.data_info['y_list_columns_1d'])
-        self.test_data['y_list_1d'] = self._concat_list_columns(self.test_data['list_1d'], self.data_info['y_list_columns_1d'])
-        self.train_data['y_list_2d'] = self._concat_list_columns_2d(self.train_data['list_2d'], self.data_info['y_list_columns_2d'])
-        self.test_data['y_list_2d'] = self._concat_list_columns_2d(self.test_data['list_2d'], self.data_info['y_list_columns_2d'])
-        
-        # Prepare input list_1d and list_2d as tensors for train and test
-        self.train_data['list_1d_tensor'] = self._concat_list_columns(self.train_data['list_1d'], self.data_info['x_list_columns_1d'])
-        self.test_data['list_1d_tensor'] = self._concat_list_columns(self.test_data['list_1d'], self.data_info['x_list_columns_1d'])
-        self.train_data['list_2d_tensor'] = self._concat_list_columns_2d(self.train_data['list_2d'], self.data_info['x_list_columns_2d'])
-        self.test_data['list_2d_tensor'] = self._concat_list_columns_2d(self.test_data['list_2d'], self.data_info['x_list_columns_2d'])
-        
         # Ensure all tensors have the same batch size for TensorDataset
         self._ensure_consistent_batch_sizes()
         
@@ -151,63 +176,26 @@ class ModelTrainer:
         
         logger.info(f"Trainer initialized on device: {self.device}")
     
+        # Use learnable loss weights if specified in config
+        self.use_learnable_loss_weights = getattr(self.config, 'use_learnable_loss_weights', False)
+
     def _ensure_consistent_batch_sizes(self):
-        """Ensure all tensors have the same batch size for both train and test data."""
+        """Ensure all final tensors in train_data and test_data have the same batch size."""
+        final_tensor_keys = [
+            'time_series', 'static', 'pft_param', 'scalar',
+            'variables_1d_pft', 'variables_2d_soil',
+            'y_scalar', 'y_pft_1d', 'y_soil_2d',
+            'water', 'y_water'
+        ]
         for split_name in ['train', 'test']:
-            split_data = getattr(self, f'{split_name}_data')
-            
-            # Get all tensor keys
-            tensor_keys = ['time_series', 'static', 'target', 'list_1d_tensor', 'list_2d_tensor', 'y_list_1d', 'y_list_2d']
-            
-            # Find the minimum batch size among all tensors
-            batch_sizes = []
-            for key in tensor_keys:
-                if key in split_data and isinstance(split_data[key], torch.Tensor):
-                    batch_sizes.append(split_data[key].shape[0])
-            
-            if not batch_sizes:
-                logger.warning(f"No tensors found in {split_name} data")
+            split = getattr(self, f'{split_name}_data')
+            keys_present = [k for k in final_tensor_keys if k in split and isinstance(split[k], torch.Tensor)]
+            if not keys_present:
                 continue
-                
-            min_batch_size = min(batch_sizes)
-            logger.info(f"{split_name} data - minimum batch size: {min_batch_size}")
-            
-            # Truncate all tensors to the minimum batch size
-            for key in tensor_keys:
-                if key in split_data and isinstance(split_data[key], torch.Tensor):
-                    current_size = split_data[key].shape[0]
-                    if current_size != min_batch_size:
-                        logger.info(f"Truncating {key} from {current_size} to {min_batch_size}")
-                        split_data[key] = split_data[key][:min_batch_size]
-            
-            # Also handle list_1d and list_2d dictionaries
-            for list_key in ['list_1d', 'list_2d']:
-                if list_key in split_data and isinstance(split_data[list_key], dict):
-                    for col_key, tensor in split_data[list_key].items():
-                        if isinstance(tensor, torch.Tensor):
-                            current_size = tensor.shape[0]
-                            if current_size != min_batch_size:
-                                logger.info(f"Truncating {list_key}[{col_key}] from {current_size} to {min_batch_size}")
-                                split_data[list_key][col_key] = tensor[:min_batch_size]
-    
-    def _move_data_to_device(self):
-        """Move all data to the specified device."""
-        # Move time series data
-        self.train_data['time_series'] = self.train_data['time_series'].to(self.device)
-        self.test_data['time_series'] = self.test_data['time_series'].to(self.device)
-        
-        # Move static data
-        self.train_data['static'] = self.train_data['static'].to(self.device)
-        self.test_data['static'] = self.test_data['static'].to(self.device)
-        
-        # Move target data
-        self.train_data['target'] = self.train_data['target'].to(self.device)
-        self.test_data['target'] = self.test_data['target'].to(self.device)
-        
-        # Move list data
-        for key in ['list_1d', 'list_2d']:
-            self.train_data[key] = {k: v.to(self.device) for k, v in self.train_data[key].items()}
-            self.test_data[key] = {k: v.to(self.device) for k, v in self.test_data[key].items()}
+            min_length = min(split[k].shape[0] for k in keys_present)
+            for k in keys_present:
+                if split[k].shape[0] != min_length:
+                    split[k] = split[k][:min_length]
     
     def _concat_list_columns(self, list_dict, col_names):
         """Concatenate 1D list columns into a tensor."""
@@ -251,14 +239,16 @@ class ModelTrainer:
         tensors_to_check = [
             self.train_data['time_series'],
             self.train_data['static'],
-            self.train_data['target'],
-            self.train_data['list_1d_tensor'],
-            self.train_data['list_2d_tensor'],
-            self.train_data['y_list_1d'],
-            self.train_data['y_list_2d']
+            self.train_data['pft_param'],
+            self.train_data['scalar'],
+            self.train_data['variables_1d_pft'],
+            self.train_data['variables_2d_soil'],
+            self.train_data['y_scalar'],
+            self.train_data['y_pft_1d'],
+            self.train_data['y_soil_2d']
         ]
         
-        tensor_names = ['time_series', 'static', 'target', 'list_1d_tensor', 'list_2d_tensor', 'y_list_1d', 'y_list_2d']
+        tensor_names = ['time_series', 'static', 'pft_param', 'scalar', 'variables_1d_pft', 'variables_2d_soil', 'y_scalar', 'y_pft_1d', 'y_soil_2d']
         batch_sizes = [t.shape[0] for t in tensors_to_check]
         
         logger.info(f"Training tensor batch sizes: {dict(zip(tensor_names, batch_sizes))}")
@@ -267,16 +257,41 @@ class ModelTrainer:
             logger.error(f"Tensor batch sizes are inconsistent: {dict(zip(tensor_names, batch_sizes))}")
             raise ValueError(f"Tensor batch sizes must be consistent. Found: {dict(zip(tensor_names, batch_sizes))}")
         
+        # Add water to tensors_to_check and tensor_names if present
+        if 'water' in self.train_data:
+            tensors_to_check.append(self.train_data['water'])
+            tensor_names.append('water')
+        if 'y_water' in self.train_data:
+            tensors_to_check.append(self.train_data['y_water'])
+            tensor_names.append('y_water')
+        
         # Create data loader with GPU optimizations
-        train_dataset = TensorDataset(
-            self.train_data['time_series'],
-            self.train_data['static'],
-            self.train_data['target'],
-            self.train_data['list_1d_tensor'],
-            self.train_data['list_2d_tensor'],
-            self.train_data['y_list_1d'],
-            self.train_data['y_list_2d']
-        )
+        if 'water' in self.train_data and 'y_water' in self.train_data:
+            train_dataset = TensorDataset(
+                self.train_data['time_series'],
+                self.train_data['static'],
+                self.train_data['pft_param'],
+                self.train_data['scalar'],
+                self.train_data['variables_1d_pft'],
+                self.train_data['variables_2d_soil'],
+                self.train_data['y_pft_1d'],
+                self.train_data['y_scalar'],
+                self.train_data['y_soil_2d'],
+                self.train_data['water'],
+                self.train_data['y_water']
+            )
+        else:
+            train_dataset = TensorDataset(
+                self.train_data['time_series'],
+                self.train_data['static'],
+                self.train_data['pft_param'],
+                self.train_data['scalar'],
+                self.train_data['variables_1d_pft'],
+                self.train_data['variables_2d_soil'],
+                self.train_data['y_scalar'],
+                self.train_data['y_pft_1d'],
+                self.train_data['y_soil_2d']
+            )
         
         train_loader = DataLoader(
             train_dataset,
@@ -284,93 +299,92 @@ class ModelTrainer:
             shuffle=True,
             pin_memory=self.config.pin_memory,
             num_workers=self.config.num_workers,
-            prefetch_factor=self.config.prefetch_factor,
-            persistent_workers=self.config.persistent_workers
+            prefetch_factor=(2 if self.config.num_workers > 0 else None),
+            persistent_workers=False
         )
-        
         progress_bar = tqdm(train_loader, desc="Training")
         
-        for batch_idx, (time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d) in enumerate(progress_bar):
+        def get_loss_value(loss):
+            return loss.item() if hasattr(loss, 'item') else loss
+
+        for batch_idx, batch in enumerate(progress_bar):
+            if 'water' in self.train_data and 'y_water' in self.train_data:
+                (time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, y_scalar, y_pft_1d, y_soil_2d, water, y_water) = batch
+            else:
+                (time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, y_scalar, y_pft_1d, y_soil_2d) = batch
+            # --- DEBUG: Print tensor shapes and device before model call ---
+            # print(f"[DEBUG] Batch {batch_idx} tensor shapes and device:")
+            # print(f"  time_series: {time_series.shape}, device: {time_series.device}")
+            # print(f"  static: {static.shape}, device: {static.device}")
+            # print(f"  pft_param: {pft_param.shape}, device: {pft_param.device}")
+            # print(f"  scalar: {scalar.shape}, device: {scalar.device}")
+            # print(f"  variables_1d_pft: {variables_1d_pft.shape}, device: {variables_1d_pft.device}")
+            # print(f"  variables_2d_soil: {variables_2d_soil.shape}, device: {variables_2d_soil.device}")
+            # print(f"  y_scalar: {y_scalar.shape}, device: {y_scalar.device}")
+            # print(f"  y_pft_1d: {y_pft_1d.shape}, device: {y_pft_1d.device}")
+            # print(f"  y_soil_2d: {y_soil_2d.shape}, device: {y_soil_2d.device}")
+            # if 'water' in self.train_data and 'y_water' in self.train_data:
+            #     print(f"  water: {water.shape}, device: {water.device}")
+            #     print(f"  y_water: {y_water.shape}, device: {y_water.device}")
             # Move data to device and ensure contiguous
             time_series = time_series.to(self.device, non_blocking=True).contiguous()
             static = static.to(self.device, non_blocking=True).contiguous()
-            target = target.to(self.device, non_blocking=True).contiguous()
-            list_1d = list_1d.to(self.device, non_blocking=True).contiguous()
-            list_2d = list_2d.to(self.device, non_blocking=True).contiguous()
-            y_list_1d = y_list_1d.to(self.device, non_blocking=True).contiguous()
-            y_list_2d = y_list_2d.to(self.device, non_blocking=True).contiguous()
-            
-            # Zero gradients
+            variables_1d_pft = variables_1d_pft.to(self.device, non_blocking=True).contiguous()
+            variables_2d_soil = variables_2d_soil.to(self.device, non_blocking=True).contiguous()
+            pft_param = pft_param.to(self.device, non_blocking=True).contiguous()
+            scalar = scalar.to(self.device, non_blocking=True).contiguous()
+            y_scalar = y_scalar.to(self.device, non_blocking=True).contiguous()   
+            y_pft_1d = y_pft_1d.to(self.device, non_blocking=True).contiguous()                     
+            y_soil_2d = y_soil_2d.to(self.device, non_blocking=True).contiguous()
+            if 'water' in self.train_data and 'y_water' in self.train_data:
+                water = water.to(self.device, non_blocking=True).contiguous()
+                y_water = y_water.to(self.device, non_blocking=True).contiguous()
+
+            # print(f"[DEBUG] variables_1d_pft shape before model: {variables_1d_pft.shape}")
+            # if variables_1d_pft.dim() == 2 and variables_1d_pft.shape[1] == 224:
+            #     variables_1d_pft = variables_1d_pft.view(-1, 14, 16)
+            #     print(f"[DEBUG] variables_1d_pft reshaped to: {variables_1d_pft.shape}")
+
             self.optimizer.zero_grad()
             
-            # Forward pass with mixed precision
-            if self.use_amp:
-                with torch.amp.autocast('cuda'):
-                    # Ensure time series data is contiguous
-                    if not time_series.is_contiguous():
-                        logger.warning("Time series tensor is not contiguous, making it contiguous")
-                        time_series = time_series.contiguous()
-                    
-                    # Validate time series tensor shape
-                    if time_series.dim() != 3:
-                        logger.error(f"Time series tensor has wrong dimensions: {time_series.shape}, expected 3D")
-                        raise ValueError(f"Time series tensor has wrong dimensions: {time_series.shape}")
-                    
-                    if time_series.size(1) == 0:
-                        logger.error(f"Time series tensor has zero sequence length: {time_series.shape}")
-                        raise ValueError(f"Time series tensor has zero sequence length: {time_series.shape}")
-                    
-                    logger.debug(f"Time series tensor shape: {time_series.shape}")
-                    
-                    outputs = self.model(
-                        time_series, static, list_1d, list_2d
-                    )
-                    # Handle both tuple and dictionary returns
-                    if isinstance(outputs, tuple):
-                        scalar_pred, vector_pred, matrix_pred = outputs
+            # Forward pass (with or without mixed precision)
+            if self.use_amp and self.scaler is not None:
+                with torch.cuda.amp.autocast():
+                    if 'water' in self.train_data and 'y_water' in self.train_data:
+                        outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, water)
                     else:
-                        scalar_pred = outputs['scalar']
-                        vector_pred = outputs['vector']
-                        matrix_pred = outputs['matrix']
-                    loss = self._compute_loss(
-                        scalar_pred, vector_pred, matrix_pred,
-                        target, y_list_1d, y_list_2d
-                    )
-                
-                # Backward pass with gradient scaling
+                        outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
+            else:
+                if 'water' in self.train_data and 'y_water' in self.train_data:
+                    outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, water)
+                else:
+                    outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
+
+            # Compute loss
+            loss = self._compute_loss(outputs['scalar'], y_scalar)
+            #loss += self._compute_loss(outputs['pft_1d'], y_pft_1d)
+            loss += self._compute_loss(outputs['pft_1d'], y_pft_1d.view(y_pft_1d.size(0), -1))
+            #loss += self._compute_loss(outputs['soil_2d'], y_soil_2d)
+            loss += self._compute_loss(outputs['soil_2d'].view(y_soil_2d.size(0), -1), y_soil_2d.view(y_soil_2d.size(0), -1))
+            if 'water' in self.train_data and 'y_water' in self.train_data and 'water' in outputs:
+                loss += self._compute_loss(outputs['water'], y_water)
+
+            # Backward and optimizer step
+            if self.use_amp and self.scaler is not None:
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                # Ensure time series data is contiguous
-                if not time_series.is_contiguous():
-                    logger.warning("Time series tensor is not contiguous, making it contiguous")
-                    time_series = time_series.contiguous()
-                
-                outputs = self.model(
-                    time_series, static, list_1d, list_2d
-                )
-                # Handle both tuple and dictionary returns
-                if isinstance(outputs, tuple):
-                    scalar_pred, vector_pred, matrix_pred = outputs
-                else:
-                    scalar_pred = outputs['scalar']
-                    vector_pred = outputs['vector']
-                    matrix_pred = outputs['matrix']
-                loss = self._compute_loss(
-                    scalar_pred, vector_pred, matrix_pred,
-                    target, y_list_1d, y_list_2d
-                )
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
             
-            total_loss += loss.item()
+            loss_value = get_loss_value(loss)
+            total_loss += loss_value
             num_batches += 1
-            
-            # Update progress bar
             progress_bar.set_postfix({
-                'loss': f'{loss.item():.4f}',
-                'avg_loss': f'{total_loss/num_batches:.4f}'
+                'loss': f'{loss_value:.4f}',
+                'avg_loss': f'{(total_loss/num_batches):.4f}'
             })
             
             # GPU memory management
@@ -386,6 +400,8 @@ class ModelTrainer:
             if self.gpu_monitor.check_memory_threshold(self.config.max_memory_usage):
                 logger.warning(f"GPU memory usage exceeds {self.config.max_memory_usage*100}%")
                 self.gpu_monitor.empty_cache()
+            # --- DEBUG: Call torch.cuda.empty_cache() after each batch ---
+            torch.cuda.empty_cache()
         
         return total_loss / num_batches
     
@@ -399,14 +415,16 @@ class ModelTrainer:
         tensors_to_check = [
             self.test_data['time_series'],
             self.test_data['static'],
-            self.test_data['target'],
-            self.test_data['list_1d_tensor'],
-            self.test_data['list_2d_tensor'],
-            self.test_data['y_list_1d'],
-            self.test_data['y_list_2d']
+            self.test_data['variables_1d_pft'],
+            self.test_data['variables_2d_soil'],
+            self.test_data['y_soil_2d'],
+            self.test_data['pft_param'],
+            self.test_data['scalar'],
+            self.test_data['y_pft_1d'],
+            self.test_data['y_scalar']
         ]
         
-        tensor_names = ['time_series', 'static', 'target', 'list_1d_tensor', 'list_2d_tensor', 'y_list_1d', 'y_list_2d']
+        tensor_names = ['time_series', 'static', 'variables_1d_pft', 'variables_2d_soil', 'y_soil_2d', 'pft_param', 'scalar', 'y_pft_1d', 'y_scalar']
         batch_sizes = [t.shape[0] for t in tensors_to_check]
         
         logger.info(f"Validation tensor batch sizes: {dict(zip(tensor_names, batch_sizes))}")
@@ -420,15 +438,40 @@ class ModelTrainer:
             logger.error(f"Validation tensor batch sizes are inconsistent: {dict(zip(tensor_names, batch_sizes))}")
             raise ValueError(f"Validation tensor batch sizes must be consistent. Found: {dict(zip(tensor_names, batch_sizes))}")
         
+        # Add water to tensors_to_check and tensor_names if present
+        if 'water' in self.test_data:
+            tensors_to_check.append(self.test_data['water'])
+            tensor_names.append('water')
+        if 'y_water' in self.test_data:
+            tensors_to_check.append(self.test_data['y_water'])
+            tensor_names.append('y_water')
+        
         # Create data loader with GPU optimizations
-        val_dataset = TensorDataset(
-            self.test_data['time_series'],
-            self.test_data['static'],
-            self.test_data['target'],
-            self.test_data['list_1d_tensor'],
-            self.test_data['list_2d_tensor'],
-            self.test_data['y_list_1d'],
-            self.test_data['y_list_2d']
+        if 'water' in self.test_data and 'y_water' in self.test_data:
+            val_dataset = TensorDataset(
+                self.test_data['time_series'],
+                self.test_data['static'],
+                self.test_data['pft_param'],
+                self.test_data['scalar'],
+                self.test_data['variables_1d_pft'],
+                self.test_data['variables_2d_soil'],
+                self.test_data['y_scalar'],
+                self.test_data['y_pft_1d'],
+                self.test_data['y_soil_2d'],
+                self.test_data['water'],
+                self.test_data['y_water']
+            )
+        else:
+            val_dataset = TensorDataset(
+                self.test_data['time_series'],
+                self.test_data['static'],
+                self.test_data['pft_param'],
+                self.test_data['scalar'],
+                self.test_data['variables_1d_pft'],
+                self.test_data['variables_2d_soil'],
+                self.test_data['y_scalar'],
+                self.test_data['y_pft_1d'],
+                self.test_data['y_soil_2d']
         )
         
         val_loader = DataLoader(
@@ -443,78 +486,60 @@ class ModelTrainer:
         
         with torch.no_grad():
             progress_bar = tqdm(val_loader, desc="Validation")
-            
-            for batch_idx, (time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d) in enumerate(progress_bar):
+            def get_loss_value(loss):
+                return loss.item() if hasattr(loss, 'item') else loss
+            for batch_idx, batch in enumerate(progress_bar):
+                if 'water' in self.test_data and 'y_water' in self.test_data:
+                    (time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, y_scalar, y_pft_1d, y_soil_2d, water, y_water) = batch
+                else:
+                    (time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, y_scalar, y_pft_1d, y_soil_2d) = batch
                 # Move data to device and ensure contiguous
                 time_series = time_series.to(self.device, non_blocking=True).contiguous()
                 static = static.to(self.device, non_blocking=True).contiguous()
-                target = target.to(self.device, non_blocking=True).contiguous()
-                list_1d = list_1d.to(self.device, non_blocking=True).contiguous()
-                list_2d = list_2d.to(self.device, non_blocking=True).contiguous()
-                y_list_1d = y_list_1d.to(self.device, non_blocking=True).contiguous()
-                y_list_2d = y_list_2d.to(self.device, non_blocking=True).contiguous()
-                
-                # Forward pass with mixed precision
-                if self.use_amp:
-                    with torch.amp.autocast('cuda'):
-                        # Ensure time series data is contiguous
-                        if not time_series.is_contiguous():
-                            logger.warning("Time series tensor is not contiguous, making it contiguous")
-                            time_series = time_series.contiguous()
-                        
-                        # Validate time series tensor shape
-                        if time_series.dim() != 3:
-                            logger.error(f"Time series tensor has wrong dimensions: {time_series.shape}, expected 3D")
-                            raise ValueError(f"Time series tensor has wrong dimensions: {time_series.shape}")
-                        
-                        if time_series.size(1) == 0:
-                            logger.error(f"Time series tensor has zero sequence length: {time_series.shape}")
-                            raise ValueError(f"Time series tensor has zero sequence length: {time_series.shape}")
-                        
-                        logger.debug(f"Time series tensor shape: {time_series.shape}")
-                        
-                        outputs = self.model(
-                            time_series, static, list_1d, list_2d
-                        )
-                        # Handle both tuple and dictionary returns
-                        if isinstance(outputs, tuple):
-                            scalar_pred, vector_pred, matrix_pred = outputs
+                variables_1d_pft = variables_1d_pft.to(self.device, non_blocking=True).contiguous()
+                variables_2d_soil = variables_2d_soil.to(self.device, non_blocking=True).contiguous()
+                pft_param = pft_param.to(self.device, non_blocking=True).contiguous()
+                scalar = scalar.to(self.device, non_blocking=True).contiguous()
+                y_scalar = y_scalar.to(self.device, non_blocking=True).contiguous()
+                y_pft_1d = y_pft_1d.to(self.device, non_blocking=True).contiguous()
+                y_soil_2d = y_soil_2d.to(self.device, non_blocking=True).contiguous()
+                if 'water' in self.test_data and 'y_water' in self.test_data:
+                    water = water.to(self.device, non_blocking=True).contiguous()
+                    y_water = y_water.to(self.device, non_blocking=True).contiguous()
+
+                # print(f"[DEBUG] variables_1d_pft shape before model (val): {variables_1d_pft.shape}")
+                # if variables_1d_pft.dim() == 2 and variables_1d_pft.shape[1] == 224:
+                #     variables_1d_pft = variables_1d_pft.view(-1, 14, 16)
+                #     print(f"[DEBUG] variables_1d_pft reshaped to: {variables_1d_pft.shape}")
+
+                # Forward pass (with or without mixed precision)
+                if self.use_amp and self.scaler is not None:
+                    with torch.cuda.amp.autocast():
+                        if 'water' in self.test_data and 'y_water' in self.test_data:
+                            outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, water)
                         else:
-                            scalar_pred = outputs['scalar']
-                            vector_pred = outputs['vector']
-                            matrix_pred = outputs['matrix']
-                        loss = self._compute_loss(
-                            scalar_pred, vector_pred, matrix_pred,
-                            target, y_list_1d, y_list_2d
-                        )
+                            outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
                 else:
-                    # Ensure time series data is contiguous
-                    if not time_series.is_contiguous():
-                        logger.warning("Time series tensor is not contiguous, making it contiguous")
-                        time_series = time_series.contiguous()
-                    
-                    outputs = self.model(
-                        time_series, static, list_1d, list_2d
-                    )
-                    # Handle both tuple and dictionary returns
-                    if isinstance(outputs, tuple):
-                        scalar_pred, vector_pred, matrix_pred = outputs
+                    if 'water' in self.test_data and 'y_water' in self.test_data:
+                        outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, water)
                     else:
-                        scalar_pred = outputs['scalar']
-                        vector_pred = outputs['vector']
-                        matrix_pred = outputs['matrix']
-                    loss = self._compute_loss(
-                        scalar_pred, vector_pred, matrix_pred,
-                        target, y_list_1d, y_list_2d
-                    )
+                        outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
+
+                # Compute loss
+                loss = self._compute_loss(outputs['scalar'], y_scalar)
+                #loss += self._compute_loss(outputs['pft_1d'], y_pft_1d)
+                loss += self._compute_loss(outputs['pft_1d'].view(y_pft_1d.size(0), -1), y_pft_1d.view(y_pft_1d.size(0), -1))
+                #loss += self._compute_loss(outputs['soil_2d'], y_soil_2d)
+                loss += self._compute_loss(outputs['soil_2d'].view(y_soil_2d.size(0), -1), y_soil_2d.view(y_soil_2d.size(0), -1))
+                if 'water' in self.test_data and 'y_water' in self.test_data and 'water' in outputs:
+                    loss += self._compute_loss(outputs['water'], y_water)
                 
-                total_loss += loss.item()
+                loss_value = get_loss_value(loss)
+                total_loss += loss_value
                 num_batches += 1
-                
-                # Update progress bar
                 progress_bar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'avg_loss': f'{total_loss/num_batches:.4f}'
+                    'loss': f'{loss_value:.4f}',
+                    'avg_loss': f'{(total_loss/num_batches):.4f}'
                 })
         
         # Handle the case where no batches were processed
@@ -525,119 +550,64 @@ class ModelTrainer:
         return total_loss / num_batches
     
     def _prepare_batch_data(self, data: Dict[str, Any], start_idx: int, end_idx: int) -> Dict[str, Any]:
-        """Prepare batch data for training/validation."""
+        """Prepare batch data for training/validation using only final model-ready tensors, in config order."""
         batch_data = {}
         batch_size = end_idx - start_idx
         device = data['time_series'].device
         
-        # Time series and static data
+        # Required inputs (order enforced by config)
         batch_data['time_series'] = data['time_series'][start_idx:end_idx]
         batch_data['static'] = data['static'][start_idx:end_idx]
-        batch_data['target'] = data['target'][start_idx:end_idx]
-        assert batch_data['time_series'].shape[0] == batch_size, f"time_series batch size mismatch: {batch_data['time_series'].shape[0]} vs {batch_size}"
-        assert batch_data['static'].shape[0] == batch_size, f"static batch size mismatch: {batch_data['static'].shape[0]} vs {batch_size}"
-        assert batch_data['target'].shape[0] == batch_size, f"target batch size mismatch: {batch_data['target'].shape[0]} vs {batch_size}"
-        
-        # List data - separate input and target
-        # Input 1D data (only x_list_columns_1d)
-        input_1d_tensors = []
-        for col in self.data_info['x_list_columns_1d']:
-            if col in data['list_1d']:
-                t = data['list_1d'][col][start_idx:end_idx]
-                input_1d_tensors.append(t)
-            else:
-                input_1d_tensors.append(torch.zeros(batch_size, self.data_info['vector_length'], device=device))
-        if input_1d_tensors:
-            batch_data['list_1d'] = torch.cat(input_1d_tensors, dim=1)
-        else:
-            batch_data['list_1d'] = torch.empty(batch_size, 0, device=device)
-        assert batch_data['list_1d'].shape[0] == batch_size, f"list_1d batch size mismatch: {batch_data['list_1d'].shape[0]} vs {batch_size}"
-        
-        # Input 2D data (only x_list_columns_2d)
-        input_2d_tensors = []
-        for col in self.data_info['x_list_columns_2d']:
-            if col in data['list_2d']:
-                t = data['list_2d'][col][start_idx:end_idx]
-                if t.shape[0] != batch_size:
-                    t = torch.zeros(batch_size, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device)
-                input_2d_tensors.append(t.unsqueeze(1))
-            else:
-                input_2d_tensors.append(torch.zeros(batch_size, 1, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device))
-        if input_2d_tensors:
-            batch_data['list_2d'] = torch.cat(input_2d_tensors, dim=1)
-        else:
-            batch_data['list_2d'] = torch.empty(batch_size, 0, 0, 0, device=device)
-        assert batch_data['list_2d'].shape[0] == batch_size, f"list_2d batch size mismatch: {batch_data['list_2d'].shape[0]} vs {batch_size}"
-        
-        # Target 1D data (only y_list_columns_1d)
-        target_1d_tensors = []
-        for col in self.data_info['y_list_columns_1d']:
-            if col in data['list_1d']:
-                t = data['list_1d'][col][start_idx:end_idx]
-                target_1d_tensors.append(t)
-            else:
-                target_1d_tensors.append(torch.zeros(batch_size, self.data_info['vector_length'], device=device))
-        if target_1d_tensors:
-            batch_data['y_list_1d'] = torch.cat(target_1d_tensors, dim=1)
-        else:
-            batch_data['y_list_1d'] = torch.empty(batch_size, 0, device=device)
-        assert batch_data['y_list_1d'].shape[0] == batch_size, f"y_list_1d batch size mismatch: {batch_data['y_list_1d'].shape[0]} vs {batch_size}"
-        
-        # Target 2D data (only y_list_columns_2d)
-        target_2d_tensors = []
-        for col in self.data_info['y_list_columns_2d']:
-            if col in data['list_2d']:
-                t = data['list_2d'][col][start_idx:end_idx]
-                if t.shape[0] != batch_size:
-                    t = torch.zeros(batch_size, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device)
-                target_2d_tensors.append(t.unsqueeze(1))
-            else:
-                target_2d_tensors.append(torch.zeros(batch_size, 1, self.data_info['matrix_rows'], self.data_info['matrix_cols'], device=device))
-        if target_2d_tensors:
-            batch_data['y_list_2d'] = torch.cat(target_2d_tensors, dim=1)
-        else:
-            batch_data['y_list_2d'] = torch.empty(batch_size, 0, 0, 0, device=device)
-        assert batch_data['y_list_2d'].shape[0] == batch_size, f"y_list_2d batch size mismatch: {batch_data['y_list_2d'].shape[0]} vs {batch_size}"
+        batch_data['pft_param'] = data['pft_param'][start_idx:end_idx]
+        batch_data['scalar'] = data['scalar'][start_idx:end_idx]
+        batch_data['variables_1d_pft'] = data['variables_1d_pft'][start_idx:end_idx]
+        batch_data['variables_2d_soil'] = data['variables_2d_soil'][start_idx:end_idx]
+        batch_data['y_scalar'] = data['y_scalar'][start_idx:end_idx]
+        batch_data['y_pft_1d'] = data['y_pft_1d'][start_idx:end_idx]
+        batch_data['y_soil_2d'] = data['y_soil_2d'][start_idx:end_idx]
+
+        # Optional water variables
+        if 'water' in data:
+            batch_data['water'] = data['water'][start_idx:end_idx]
+        if 'y_water' in data:
+            batch_data['y_water'] = data['y_water'][start_idx:end_idx]
+
+        # Assert batch sizes for all present keys
+        for k, v in batch_data.items():
+            assert v.shape[0] == batch_size, f"{k} batch size mismatch: {v.shape[0]} vs {batch_size}"
+
+        # Assert feature order for key tensors (optional, for debugging)
+        # Example: assert batch_data['scalar'].shape[1] == len(self.scalar_columns)
+        # Example: assert batch_data['variables_1d_pft'].shape[1] == len(self.variables_1d_pft_columns)
         
         return batch_data
     
-    def _compute_loss(self, scalar_pred, vector_pred, matrix_pred, target, y_list_1d, y_list_2d):
-        """Compute the total loss."""
-        total_loss = 0.0
-        
-        # Scalar loss (only if target has features)
-        if target.shape[1] > 0:
-            loss_scalar = self.criterion(scalar_pred, target)
-            total_loss += self.config.scalar_loss_weight * loss_scalar
+    def _compute_loss(self, scalar_pred, target, **kwargs):
+        """Compute only scalar loss for quick test or full loss with learnable weights if enabled."""
+        # If using CNPCombinedModel and learnable loss weights, use log_sigma weighting
+        if isinstance(self.model, CNPCombinedModel) and self.use_learnable_loss_weights:
+            # Assume outputs and targets are dicts with keys: scalar, matrix, water, pft_1d
+            outputs = kwargs.get('outputs', None)
+            targets = kwargs.get('targets', None)
+            if outputs is None or targets is None:
+                # Fallback to scalar only
+                return self.criterion(scalar_pred, target)
+            loss = 0.0
+            # Scalar
+            if 'scalar' in outputs and 'scalar' in targets and self.model.log_sigma_scalar is not None:
+                loss += (torch.exp(-2 * self.model.log_sigma_scalar) * self.criterion(outputs['scalar'], targets['scalar']) + self.model.log_sigma_scalar)
+            # Matrix
+            if 'matrix' in outputs and 'matrix' in targets and self.model.log_sigma_matrix is not None:
+                loss += (torch.exp(-2 * self.model.log_sigma_matrix) * self.criterion(outputs['matrix'], targets['matrix']) + self.model.log_sigma_matrix)
+            # Water
+            if hasattr(self.model, 'log_sigma_water') and self.model.log_sigma_water is not None and 'water' in outputs and 'water' in targets:
+                loss += (torch.exp(-2 * self.model.log_sigma_water) * self.criterion(outputs['water'], targets['water']) + self.model.log_sigma_water)
+            # PFT 1D
+            if hasattr(self.model, 'log_sigma_pft_1d') and self.model.log_sigma_pft_1d is not None and 'pft_1d' in outputs and 'pft_1d' in targets:
+                loss += (torch.exp(-2 * self.model.log_sigma_pft_1d) * self.criterion(outputs['pft_1d'], targets['pft_1d']) + self.model.log_sigma_pft_1d)
+            return loss
         else:
-            loss_scalar = torch.tensor(0.0, device=self.device)
-        
-        # Vector loss (only if we have 1D list targets)
-        if y_list_1d.shape[1] > 0:
-            # Flatten both predictions and targets to [batch_size, -1]
-            loss_vector = self.criterion(
-                vector_pred.view(vector_pred.size(0), -1),
-                y_list_1d.view(y_list_1d.size(0), -1)
-            )
-            total_loss += self.config.vector_loss_weight * loss_vector
-        else:
-            loss_vector = torch.tensor(0.0, device=self.device)
-        
-        # Matrix loss (only if we have 2D list targets)
-        if y_list_2d.shape[1] > 0:
-            loss_matrix = self.criterion(matrix_pred, y_list_2d)
-            total_loss += self.config.matrix_loss_weight * loss_matrix
-        else:
-            loss_matrix = torch.tensor(0.0, device=self.device)
-        
-        # Log loss weights for debugging
-        if hasattr(self, '_loss_logged') and not self._loss_logged:
-            logger.info(f"Loss weights - Scalar: {self.config.scalar_loss_weight:.4f}, "
-                       f"Vector: {self.config.vector_loss_weight:.4f}, "
-                       f"Matrix: {self.config.matrix_loss_weight:.4f}")
-            self._loss_logged = True
-        
-        return total_loss
+            return self.criterion(scalar_pred, target)
     
     def train(self) -> Dict[str, List[float]]:
         """
@@ -670,7 +640,7 @@ class ModelTrainer:
         print(f"   • Total training batches: ~{total_batches_per_epoch * self.config.num_epochs:,}")
         
         print(f"🎯 Training Goals:")
-        print(f"   • Target: Minimize combined loss (scalar + vector + matrix)")
+        print(f"   • Target: Minimize combined loss (scalar + matrix)")
         print(f"   • Early stopping: {'Enabled' if self.config.use_early_stopping else 'Disabled'}")
         if self.config.use_early_stopping:
             print(f"   • Patience: {self.config.patience} epochs")
@@ -679,18 +649,39 @@ class ModelTrainer:
         print(f"{'='*60}")
         
         for epoch in range(self.config.num_epochs):
+            # Check for NaNs/Infs in training data at the start of the epoch
+            def count_nans_infs(name, tensor):
+                n_nan = torch.isnan(tensor).sum().item() if torch.is_tensor(tensor) else 0
+                n_inf = torch.isinf(tensor).sum().item() if torch.is_tensor(tensor) else 0
+                print(f"Epoch {epoch+1}: {name} - NaNs: {n_nan}, Infs: {n_inf}")
+            count_nans_infs('time_series', self.train_data['time_series'])
+            count_nans_infs('static', self.train_data['static'])
+            if 'list_1d' in self.train_data:
+                for k, v in self.train_data['list_1d'].items():
+                    count_nans_infs(f'list_1d[{k}]', v)
+            if 'list_2d' in self.train_data:
+                for k, v in self.train_data['list_2d'].items():
+                    count_nans_infs(f'list_2d[{k}]', v)
+            if 'list_scalar' in self.train_data:
+                count_nans_infs('list_scalar', self.train_data['list_scalar'])
+            if 'pft_param' in self.train_data:
+                count_nans_infs('pft_param', self.train_data['pft_param'])
+            if 'y_pft_1d' in self.train_data:
+                count_nans_infs('y_pft_1d', self.train_data['y_pft_1d'])
+            if 'y_scalar' in self.train_data:
+                count_nans_infs('y_scalar', self.train_data['y_scalar'])
             # Print epoch header
-            print(f"\n{'='*20} EPOCH {epoch+1}/{self.config.num_epochs} {'='*20}")
+            # print(f"\n{'='*20} EPOCH {epoch+1}/{self.config.num_epochs} {'='*20}")
             logger.info(f"Starting Epoch {epoch+1}/{self.config.num_epochs}")
             
             # Training
-            print(f"Training...")
+            # print(f"Training...")
             train_loss = self.train_epoch()
             self.train_losses.append(train_loss)
             
             # Validation
             if epoch % self.config.validation_frequency == 0:
-                print(f"Validating...")
+                # print(f"Validating...")
                 val_loss = self.validate_epoch()
                 self.val_losses.append(val_loss)
                 
@@ -715,7 +706,7 @@ class ModelTrainer:
                 log_msg = f"Loss weights - "
                 if 'scalar' in loss_weights:
                     log_msg += f"Scalar: {loss_weights['scalar']:.4f}, "
-                log_msg += f"Vector: {loss_weights['vector']:.4f}, Matrix: {loss_weights['matrix']:.4f}"
+                log_msg += f"Matrix: {loss_weights['matrix']:.4f}"
                 logger.info(log_msg)
                 
                 # Show progress percentage
@@ -725,7 +716,6 @@ class ModelTrainer:
                 # Early stopping (only if we have validation data)
                 if self.config.use_early_stopping and val_loss != float('inf'):
                     if self._check_early_stopping(val_loss):
-                        print("🛑 Early stopping triggered")
                         logger.info("Early stopping triggered")
                         break
                 
@@ -755,7 +745,7 @@ class ModelTrainer:
         logger.info("Training completed")
         
         # Print final summary
-        print(f"🎉 Training completed successfully!")
+        print(f" Training completed successfully!")
         print(f"📈 Final Results:")
         print(f"   • Total epochs completed: {len(self.train_losses)}")
         print(f"   • Final training loss: {self.train_losses[-1]:.4f}")
@@ -798,28 +788,28 @@ class ModelTrainer:
         test_batch_sizes = [
             self.test_data['time_series'].shape[0],
             self.test_data['static'].shape[0],
-            self.test_data['target'].shape[0],
-            self.test_data['list_1d_tensor'].shape[0],
-            self.test_data['list_2d_tensor'].shape[0],
-            self.test_data['y_list_1d'].shape[0],
-            self.test_data['y_list_2d'].shape[0]
+            self.test_data['pft_param'].shape[0],
+            self.test_data['scalar'].shape[0],
+            self.test_data['variables_1d_pft'].shape[0],
+            self.test_data['variables_2d_soil'].shape[0],
+            self.test_data['y_scalar'].shape[0],
+            self.test_data['y_pft_1d'].shape[0],
+            self.test_data['y_soil_2d'].shape[0]
         ]
-        
         if all(size == 0 for size in test_batch_sizes):
             logger.warning("No test data available. Skipping evaluation.")
-            # Return empty predictions and default metrics
             empty_predictions = {
                 'scalar': torch.empty(0, 0),
-                'vector': torch.empty(0, 0),
-                'matrix': torch.empty(0, 0, 0, 0)
+                'pft_1d': torch.empty(0, 0),
+                'soil_2d': torch.empty(0, 0, 0, 0)
             }
             default_metrics = {
                 'scalar_rmse': 0.0,
                 'scalar_mse': 0.0,
-                'vector_rmse': 0.0,
-                'vector_mse': 0.0,
-                'matrix_rmse': 0.0,
-                'matrix_mse': 0.0
+                'pft_1d_rmse': 0.0,
+                'pft_1d_mse': 0.0,
+                'soil_2d_rmse': 0.0,
+                'soil_2d_mse': 0.0
             }
             return empty_predictions, default_metrics
         
@@ -827,13 +817,14 @@ class ModelTrainer:
         eval_dataset = TensorDataset(
             self.test_data['time_series'],
             self.test_data['static'],
-            self.test_data['target'],
-            self.test_data['list_1d_tensor'],
-            self.test_data['list_2d_tensor'],
-            self.test_data['y_list_1d'],
-            self.test_data['y_list_2d']
+            self.test_data['pft_param'],
+            self.test_data['scalar'],
+            self.test_data['variables_1d_pft'],
+            self.test_data['variables_2d_soil'],
+            self.test_data['y_scalar'],
+            self.test_data['y_pft_1d'],
+            self.test_data['y_soil_2d']
         )
-        
         eval_loader = DataLoader(
             eval_dataset,
             batch_size=self.config.batch_size,
@@ -841,209 +832,71 @@ class ModelTrainer:
             pin_memory=self.config.pin_memory,
             num_workers=self.config.num_workers
         )
-        
         all_predictions = {
             'scalar': [],
-            'vector': [],
-            'matrix': []
+            'pft_1d': [],
+            'soil_2d': []
         }
         all_targets = {
-            'scalar': [],
-            'vector': [],
-            'matrix': []
+            'y_scalar': [],
+            'y_pft_1d': [],
+            'y_soil_2d': []
         }
-        
         with torch.no_grad():
-            for time_series, static, target, list_1d, list_2d, y_list_1d, y_list_2d in eval_loader:
-                # Move to device and ensure contiguous
-                time_series = time_series.to(self.device, non_blocking=True).contiguous()
-                static = static.to(self.device, non_blocking=True).contiguous()
-                target = target.to(self.device, non_blocking=True).contiguous()
-                list_1d = list_1d.to(self.device, non_blocking=True).contiguous()
-                list_2d = list_2d.to(self.device, non_blocking=True).contiguous()
-                y_list_1d = y_list_1d.to(self.device, non_blocking=True).contiguous()
-                y_list_2d = y_list_2d.to(self.device, non_blocking=True).contiguous()
-                
-                # Forward pass with mixed precision
-                if self.use_amp:
+            for time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil, y_scalar, y_pft_1d, y_soil_2d in eval_loader:
+                # Move to device
+                time_series = time_series.to(self.device, non_blocking=True)
+                static = static.to(self.device, non_blocking=True)
+                pft_param = pft_param.to(self.device, non_blocking=True)
+                scalar = scalar.to(self.device, non_blocking=True)
+                variables_1d_pft = variables_1d_pft.to(self.device, non_blocking=True)
+                variables_2d_soil = variables_2d_soil.to(self.device, non_blocking=True)
+                y_scalar = y_scalar.to(self.device, non_blocking=True)
+                y_pft_1d = y_pft_1d.to(self.device, non_blocking=True)
+                y_soil_2d = y_soil_2d.to(self.device, non_blocking=True)
+                # Forward pass
+                if self.use_amp and self.scaler is not None:
                     with torch.amp.autocast('cuda'):
-                        outputs = self.model(
-                            time_series, static, list_1d, list_2d
-                        )
-                        # Handle both tuple and dictionary returns
-                        if isinstance(outputs, tuple):
-                            scalar_pred, vector_pred, matrix_pred = outputs
-                        else:
-                            scalar_pred = outputs['scalar']
-                            vector_pred = outputs['vector']
-                            matrix_pred = outputs['matrix']
+                        outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
                 else:
-                    outputs = self.model(
-                        time_series, static, list_1d, list_2d
-                    )
-                    # Handle both tuple and dictionary returns
-                    if isinstance(outputs, tuple):
-                        scalar_pred, vector_pred, matrix_pred = outputs
-                    else:
-                        scalar_pred = outputs['scalar']
-                        vector_pred = outputs['vector']
-                        matrix_pred = outputs['matrix']
-                
-                # Collect predictions and targets
-                all_predictions['scalar'].append(scalar_pred.cpu())
-                all_predictions['vector'].append(vector_pred.cpu())
-                all_predictions['matrix'].append(matrix_pred.cpu())
-                
-                all_targets['scalar'].append(target.cpu())
-                all_targets['vector'].append(y_list_1d.cpu())
-                all_targets['matrix'].append(y_list_2d.cpu())
-        
-        # Check if we have any predictions
-        if not all_predictions['scalar']:
-            logger.warning("No predictions generated. Returning empty results.")
-            empty_predictions = {
-                'scalar': torch.empty(0, 0),
-                'vector': torch.empty(0, 0),
-                'matrix': torch.empty(0, 0, 0, 0)
-            }
-            default_metrics = {
-                'scalar_rmse': 0.0,
-                'scalar_mse': 0.0,
-                'vector_rmse': 0.0,
-                'vector_mse': 0.0,
-                'matrix_rmse': 0.0,
-                'matrix_mse': 0.0
-            }
-            return empty_predictions, default_metrics
-        
+                    outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
+                all_predictions['scalar'].append(outputs['scalar'].cpu())
+                all_predictions['pft_1d'].append(outputs['pft_1d'].cpu())
+                all_predictions['soil_2d'].append(outputs['soil_2d'].cpu())
+                all_targets['y_scalar'].append(y_scalar.cpu())
+                all_targets['y_pft_1d'].append(y_pft_1d.cpu())
+                all_targets['y_soil_2d'].append(y_soil_2d.cpu())
         # Concatenate all batches
-        predictions = {
-            'scalar': torch.cat(all_predictions['scalar'], dim=0),
-            'vector': torch.cat(all_predictions['vector'], dim=0),
-            'matrix': torch.cat(all_predictions['matrix'], dim=0)
-        }
-        
-        targets = {
-            'scalar': torch.cat(all_targets['scalar'], dim=0),
-            'vector': torch.cat(all_targets['vector'], dim=0),
-            'matrix': torch.cat(all_targets['matrix'], dim=0)
-        }
-        
+        predictions = {k: torch.cat(v, dim=0) for k, v in all_predictions.items()}
+        targets = {k: torch.cat(v, dim=0) for k, v in all_targets.items()}
         # Calculate metrics
         metrics = self._calculate_metrics(predictions, targets)
-        
         return predictions, metrics
     
     def _calculate_metrics(self, predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """Calculate evaluation metrics."""
-        from sklearn.metrics import mean_squared_error
-        
         metrics = {}
-        
-        # Scalar metrics
-        test_target = targets['scalar'].cpu().numpy()
-        pred_scalar = predictions['scalar'].cpu().numpy()
-        mse_scalar = mean_squared_error(test_target, pred_scalar)
+        # Scalar
+        pred_scalar = predictions['scalar'].cpu().numpy().flatten()
+        target_scalar = targets['y_scalar'].cpu().numpy().flatten()
+        mask = ~np.isnan(pred_scalar) & ~np.isnan(target_scalar)
+        mse_scalar = mean_squared_error(target_scalar[mask], pred_scalar[mask])
         metrics['scalar_rmse'] = np.sqrt(mse_scalar)
         metrics['scalar_mse'] = mse_scalar
-        
-        # Vector metrics - use the y_list_1d tensor directly
-        if 'vector' in predictions and predictions['vector'].shape[1] > 0:
-            test_y_list_1d = targets['vector'].cpu().numpy()
-            pred_vector = predictions['vector'].cpu().numpy()
-            
-            # Squeeze pred_vector if it has extra singleton dimension
-            if pred_vector.ndim == 3 and pred_vector.shape[1] == 1:
-                pred_vector = pred_vector.squeeze(1)
-            
-            # Ensure shapes match
-            min_samples = min(test_y_list_1d.shape[0], pred_vector.shape[0])
-            test_y_list_1d = test_y_list_1d[:min_samples]
-            pred_vector = pred_vector[:min_samples]
-            
-            mse_vector = mean_squared_error(
-                test_y_list_1d.reshape(-1),
-                pred_vector.reshape(-1)
-            )
-            metrics['vector_rmse'] = np.sqrt(mse_vector)
-            metrics['vector_mse'] = mse_vector
-        else:
-            metrics['vector_rmse'] = 0.0
-            metrics['vector_mse'] = 0.0
-        
-        # Matrix metrics - use the y_list_2d tensor directly
-        if 'matrix' in predictions and predictions['matrix'].shape[1] > 0:
-            test_y_list_2d = targets['matrix'].cpu().numpy()
-            pred_matrix = predictions['matrix'].cpu().numpy()
-            
-            # Debug logging
-            logger.info(f"Matrix predictions shape: {pred_matrix.shape}")
-            logger.info(f"Matrix targets shape: {test_y_list_2d.shape}")
-            
-            # Squeeze pred_matrix if it has extra singleton dimension
-            if pred_matrix.ndim == 4 and pred_matrix.shape[1] == 1:
-                pred_matrix = pred_matrix.squeeze(1)
-                logger.info(f"Pred matrix after squeeze: {pred_matrix.shape}")
-            
-            # Safe dimension expansion - only expand if needed
-            if test_y_list_2d.ndim == 2:
-                # If it's 2D, we need to add channel and spatial dimensions
-                test_y_list_2d = np.expand_dims(test_y_list_2d, axis=1)  # Add channel dim
-                test_y_list_2d = np.expand_dims(test_y_list_2d, axis=2)  # Add spatial dim
-                logger.info(f"Expanded test_y_list_2d to: {test_y_list_2d.shape}")
-            elif test_y_list_2d.ndim == 3:
-                # If it's 3D, we might need to add a channel dimension
-                if test_y_list_2d.shape[1] == pred_matrix.shape[2] and test_y_list_2d.shape[2] == pred_matrix.shape[3]:
-                    # It's already in the right format (samples, rows, cols)
-                    test_y_list_2d = np.expand_dims(test_y_list_2d, axis=1)  # Add channel dim
-                    logger.info(f"Added channel dim to test_y_list_2d: {test_y_list_2d.shape}")
-            
-            # Ensure pred_matrix has the right dimensions
-            if pred_matrix.ndim == 2:
-                # If pred_matrix is 2D, reshape it to match
-                pred_matrix = pred_matrix.reshape(pred_matrix.shape[0], 1, 1, pred_matrix.shape[1])
-                logger.info(f"Reshaped pred_matrix to: {pred_matrix.shape}")
-            elif pred_matrix.ndim == 3:
-                # If pred_matrix is 3D, add channel dimension
-                pred_matrix = np.expand_dims(pred_matrix, axis=1)
-                logger.info(f"Added channel dim to pred_matrix: {pred_matrix.shape}")
-            
-            # Ensure both arrays have 4 dimensions (samples, channels, rows, cols)
-            while test_y_list_2d.ndim < 4:
-                test_y_list_2d = np.expand_dims(test_y_list_2d, axis=-1)
-            while pred_matrix.ndim < 4:
-                pred_matrix = np.expand_dims(pred_matrix, axis=-1)
-            
-            logger.info(f"Final shapes - test_y_list_2d: {test_y_list_2d.shape}, pred_matrix: {pred_matrix.shape}")
-            
-            # Ensure shapes match
-            min_samples = min(test_y_list_2d.shape[0], pred_matrix.shape[0])
-            min_channels = min(test_y_list_2d.shape[1], pred_matrix.shape[1])
-            min_rows = min(test_y_list_2d.shape[2], pred_matrix.shape[2])
-            min_cols = min(test_y_list_2d.shape[3], pred_matrix.shape[3])
-            test_y_list_2d = test_y_list_2d[:min_samples, :min_channels, :min_rows, :min_cols]
-            pred_matrix = pred_matrix[:min_samples, :min_channels, :min_rows, :min_cols]
-            
-            # Flatten both arrays to 1D
-            test_y_flat = test_y_list_2d.reshape(-1)
-            pred_flat = pred_matrix.reshape(-1)
-            
-            # Ensure they have the same length
-            min_length = min(len(test_y_flat), len(pred_flat))
-            test_y_flat = test_y_flat[:min_length]
-            pred_flat = pred_flat[:min_length]
-            
-            if min_length > 0:
-                mse_matrix = mean_squared_error(test_y_flat, pred_flat)
-                metrics['matrix_rmse'] = np.sqrt(mse_matrix)
-                metrics['matrix_mse'] = mse_matrix
-            else:
-                metrics['matrix_rmse'] = 0.0
-                metrics['matrix_mse'] = 0.0
-        else:
-            metrics['matrix_rmse'] = 0.0
-            metrics['matrix_mse'] = 0.0
-        
+        # PFT 1D
+        pred_pft_1d = predictions['pft_1d'].cpu().numpy().flatten()
+        target_pft_1d = targets['y_pft_1d'].cpu().numpy().flatten()
+        mask = ~np.isnan(pred_pft_1d) & ~np.isnan(target_pft_1d)
+        mse_pft_1d = mean_squared_error(target_pft_1d[mask], pred_pft_1d[mask])
+        metrics['pft_1d_rmse'] = np.sqrt(mse_pft_1d)
+        metrics['pft_1d_mse'] = mse_pft_1d
+        # Soil 2D
+        pred_soil_2d = predictions['soil_2d'].cpu().numpy().flatten()
+        target_soil_2d = targets['y_soil_2d'].cpu().numpy().flatten()
+        mask = ~np.isnan(pred_soil_2d) & ~np.isnan(target_soil_2d)
+        mse_soil_2d = mean_squared_error(target_soil_2d[mask], pred_soil_2d[mask])
+        metrics['soil_2d_rmse'] = np.sqrt(mse_soil_2d)
+        metrics['soil_2d_mse'] = mse_soil_2d
         return metrics
     
     def save_results(self, predictions: Dict[str, np.ndarray], metrics: Dict[str, float]):
@@ -1092,109 +945,60 @@ class ModelTrainer:
                 logger.info(f"  {key}: {tensor.shape}")
             else:
                 logger.info(f"  {key}: {type(tensor)}")
-        
-        # Save scalar predictions
+
+        # Save scalar predictions (renamed to predictions_scalar.csv)
         predictions_scalar_np = predictions['scalar'].cpu().numpy()
-        # Use only the correct number of columns
-        scalar_cols = self.data_info['target_columns'][:predictions_scalar_np.shape[1]]
+        scalar_cols = self.data_info['y_list_scalar_columns'][:predictions_scalar_np.shape[1]]
         predictions_df = pd.DataFrame(predictions_scalar_np, columns=scalar_cols)
-        predictions_df.to_csv(os.path.join(predictions_dir, 'scalar_predictions.csv'), index=False)
-        
-        # 1D predictions
-        predictions_1d_dict = {}
-        ground_truth_1d_dict = {}
-        
-        # Check if we have any vector predictions
-        if 'vector' in predictions and predictions['vector'].shape[0] > 0 and predictions['vector'].shape[1] > 0:
-            for idx, col in enumerate(self.data_info['x_list_columns_1d']):
-                y_col = 'Y_' + col
-                if y_col in self.scalers['list_1d']:
-                    pred_vector = predictions['vector']
-                    # Handle different tensor shapes
-                    if pred_vector.ndim == 2:
-                        # If it's 2D, assume shape is (samples, features)
-                        # We need to extract the corresponding feature
-                        if idx < pred_vector.shape[1]:
-                            pred_feature = pred_vector[:, idx:idx+1]  # Keep 2D shape for scaler
-                        else:
-                            logger.warning(f"Index {idx} out of bounds for vector predictions with shape {pred_vector.shape}")
-                            continue
-                    elif pred_vector.ndim == 3:
-                        # If it's 3D, assume shape is (samples, features, time_steps)
-                        pred_feature = pred_vector[:, idx, :]
-                    else:
-                        logger.warning(f"Unexpected vector prediction shape: {pred_vector.shape}")
-                        continue
-                    
-                    predictions_1d_dict[y_col] = self.scalers['list_1d'][y_col].inverse_transform(pred_feature)
-            
-            for y_col in self.test_data['list_1d']:
-                ground_truth_1d_dict[y_col] = self.test_data['list_1d'][y_col].cpu().numpy()
-        else:
-            logger.warning("No vector predictions available or predictions are empty")
-        
-        # Only create DataFrames if we have data
-        if predictions_1d_dict:
-            predictions_1d_df = pd.DataFrame({
-                col: predictions_1d_dict[col].tolist() for col in predictions_1d_dict
-            })
-            ground_truth_1d_df = pd.DataFrame({
-                col: ground_truth_1d_dict[col].tolist() for col in ground_truth_1d_dict
-            })
-            
-            predictions_1d_df.to_csv(predictions_dir / "predictions_1d.csv", index=False)
-            ground_truth_1d_df.to_csv(predictions_dir / "ground_truth_1d.csv", index=False)
-        else:
-            logger.info("Skipping 1D predictions save due to empty data")
-        
-        # 2D predictions
-        predictions_2d_dict = {}
-        ground_truth_2d_dict = {}
-        
-        # Check if we have any matrix predictions
-        if 'matrix' in predictions and predictions['matrix'].shape[0] > 0 and predictions['matrix'].shape[1] > 0:
-            for idx, col in enumerate(self.data_info['x_list_columns_2d']):
-                y_col = 'Y_' + col
-                if y_col in self.scalers['list_2d']:
-                    pred_matrix = predictions['matrix'][:, idx, :, :]
-                    # Ensure pred_matrix is 3D (samples, rows, cols)
-                    if pred_matrix.ndim == 2:
-                        pred_matrix = pred_matrix[:, None, :]
-                    elif pred_matrix.ndim == 1:
-                        pred_matrix = pred_matrix[None, None, :]
-                    pred_reshaped = pred_matrix.reshape(-1, 1)
-                    inv_pred = self.scalers['list_2d'][y_col].inverse_transform(pred_reshaped)
-                    # Reshape back to (samples, rows, cols)
-                    n_samples = predictions['matrix'].shape[0]
-                    n_rows = predictions['matrix'].shape[2]
-                    n_cols = predictions['matrix'].shape[3]
-                    predictions_2d_dict[y_col] = inv_pred.reshape(n_samples, n_rows, n_cols)
-            
-            for y_col in self.test_data['list_2d']:
-                gt_matrix = self.test_data['list_2d'][y_col].cpu().numpy()
-                # Ensure gt_matrix is 3D (samples, rows, cols)
-                if gt_matrix.ndim == 2:
-                    gt_matrix = gt_matrix[:, None, :]
-                elif gt_matrix.ndim == 1:
-                    gt_matrix = gt_matrix[None, None, :]
-                ground_truth_2d_dict[y_col] = gt_matrix
-        else:
-            logger.warning("No matrix predictions available or predictions are empty")
-        
-        # Only create DataFrames if we have data
-        if predictions_2d_dict:
-            predictions_2d_df = pd.DataFrame({
-                col: predictions_2d_dict[col].tolist() for col in predictions_2d_dict
-            })
-            ground_truth_2d_df = pd.DataFrame({
-                col: ground_truth_2d_dict[col].tolist() for col in ground_truth_2d_dict
-            })
-            
-            predictions_2d_df.to_csv(predictions_dir / "predictions_2d.csv", index=False)
-            ground_truth_2d_df.to_csv(predictions_dir / "ground_truth_2d.csv", index=False)
-        else:
-            logger.info("Skipping 2D predictions save due to empty data")
-        
+        predictions_df.to_csv(os.path.join(predictions_dir, 'predictions_scalar.csv'), index=False)
+        # Save ground truth scalar if available
+        if 'y_scalar' in self.test_data:
+            ground_truth_scalar_np = self.test_data['y_scalar'].cpu().numpy()
+            ground_truth_scalar_df = pd.DataFrame(ground_truth_scalar_np, columns=scalar_cols)
+            ground_truth_scalar_df.to_csv(os.path.join(predictions_dir, 'ground_truth_scalar.csv'), index=False)
+
+        # Save pft_1d predictions if available
+        if 'pft_1d' in predictions and predictions['pft_1d'].numel() > 0:
+            predictions_pft_1d_np = predictions['pft_1d'].cpu().numpy()
+            n_samples = predictions_pft_1d_np.shape[0]
+            # Flatten if 3D
+            if predictions_pft_1d_np.ndim == 3:
+                predictions_pft_1d_np = predictions_pft_1d_np.reshape(n_samples, -1)
+            if 'y_list_pft_1d_columns' in self.data_info and len(self.data_info['y_list_pft_1d_columns']) == predictions_pft_1d_np.shape[1]:
+                pft_1d_cols = self.data_info['y_list_pft_1d_columns']
+            else:
+                pft_1d_cols = [f"pft_1d_{i}" for i in range(predictions_pft_1d_np.shape[1])]
+            predictions_1d_df = pd.DataFrame(predictions_pft_1d_np, columns=pft_1d_cols)
+            predictions_1d_df.to_csv(os.path.join(predictions_dir, 'predictions_1d.csv'), index=False)
+            if 'y_pft_1d' in self.test_data:
+                ground_truth_pft_1d_np = self.test_data['y_pft_1d'].cpu().numpy()
+                if ground_truth_pft_1d_np.ndim == 3:
+                    ground_truth_pft_1d_np = ground_truth_pft_1d_np.reshape(n_samples, -1)
+                ground_truth_1d_df = pd.DataFrame(ground_truth_pft_1d_np, columns=pft_1d_cols)
+                ground_truth_1d_df.to_csv(os.path.join(predictions_dir, 'ground_truth_1d.csv'), index=False)
+            logger.info("pft_1d predictions and ground truth saved successfully")
+
+        # Save soil_2d predictions if available
+        if 'soil_2d' in predictions and predictions['soil_2d'].numel() > 0:
+            predictions_soil_2d_np = predictions['soil_2d'].cpu().numpy()
+            n_samples = predictions_soil_2d_np.shape[0]
+            # Flatten if 3D or higher
+            if predictions_soil_2d_np.ndim > 2:
+                predictions_soil_2d_np = predictions_soil_2d_np.reshape(n_samples, -1)
+            if 'y_list_soil_2d_columns' in self.data_info and len(self.data_info['y_list_soil_2d_columns']) == predictions_soil_2d_np.shape[1]:
+                soil_2d_cols = self.data_info['y_list_soil_2d_columns']
+            else:
+                soil_2d_cols = [f"soil_2d_{i}" for i in range(predictions_soil_2d_np.shape[1])]
+            predictions_2d_df = pd.DataFrame(predictions_soil_2d_np, columns=soil_2d_cols)
+            predictions_2d_df.to_csv(os.path.join(predictions_dir, 'predictions_2d.csv'), index=False)
+            if 'y_soil_2d' in self.test_data:
+                ground_truth_soil_2d_np = self.test_data['y_soil_2d'].cpu().numpy()
+                if ground_truth_soil_2d_np.ndim > 2:
+                    ground_truth_soil_2d_np = ground_truth_soil_2d_np.reshape(n_samples, -1)
+                ground_truth_2d_df = pd.DataFrame(ground_truth_soil_2d_np, columns=soil_2d_cols)
+                ground_truth_2d_df.to_csv(os.path.join(predictions_dir, 'ground_truth_2d.csv'), index=False)
+            logger.info("soil_2d predictions and ground truth saved successfully")
+
         logger.info("All predictions saved successfully")
     
     def plot_training_curves(self, save_path: str = "training_curves.png"):
@@ -1266,8 +1070,8 @@ class ModelTrainer:
                 # Check for early stopping (only if enabled in config)
                 if self.config.use_early_stopping:
                     if self._check_early_stopping(val_loss):
-                    logger.info("Early stopping triggered")
-                    break
+                        logger.info("Early stopping triggered")
+                        break
             
             logger.info("Training completed")
             

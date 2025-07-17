@@ -236,12 +236,12 @@ def main():
                 actual_2d_channels=actual_2d_channels
             )
         else:
-            model = CombinedModel(
-                config.model_config,
-                data_info,
-                actual_1d_size=actual_1d_size,
-                actual_2d_channels=actual_2d_channels
-            )
+        model = CombinedModel(
+            config.model_config,
+            data_info,
+            actual_1d_size=actual_1d_size,
+            actual_2d_channels=actual_2d_channels
+        )
         
         # Update training config with output directory
         config.training_config.model_save_path = str(output_dir / "model.pt")

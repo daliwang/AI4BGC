@@ -68,8 +68,8 @@ def compare_results(cpu_dir, gpu_dir):
         return
     
     # Compare scalar predictions
-    cpu_scalar_file = Path(cpu_dir) / "predictions" / "scalar_predictions.csv"
-    gpu_scalar_file = Path(gpu_dir) / "predictions" / "scalar_predictions.csv"
+    cpu_scalar_file = Path(cpu_dir) / "predictions" / "predictions_scalar.csv"
+    gpu_scalar_file = Path(gpu_dir) / "predictions" / "predictions_scalar.csv"
     
     if cpu_scalar_file.exists() and gpu_scalar_file.exists():
         cpu_scalar = pd.read_csv(cpu_scalar_file)

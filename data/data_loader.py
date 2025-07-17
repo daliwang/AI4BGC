@@ -50,17 +50,34 @@ class DataLoader:
         """Validate data and preprocessing configurations."""
         if not self.data_config.data_paths:
             raise ValueError("Data paths cannot be empty")
-        
         if not self.data_config.time_series_columns:
             raise ValueError("Time series columns cannot be empty")
-        
-        # Check for matching input/output pairs
-        if len(self.data_config.x_list_columns_1d) != len(self.data_config.y_list_columns_1d):
-            raise ValueError("Number of 1D input and output columns must match")
-        
+        # Check for matching input/output pairs for 1D
+        if len(self.data_config.variables_1d_pft) != len(self.data_config.y_list_columns_1d):
+            raise ValueError("Number of 1D input (variables_1d_pft) and output columns must match")
+        # Relaxed check for 2D: all outputs must be in inputs, but inputs can have extras
+        def strip_y(col):
+            return col[2:] if col.startswith('Y_') else col
+        x2d_set = set(self.data_config.x_list_columns_2d)
+        missing_outputs = [col for col in self.data_config.y_list_columns_2d if strip_y(col) not in x2d_set]
+        if missing_outputs:
+            raise ValueError(f"The following 2D output columns (after removing 'Y_') are not present in 2D input columns: {missing_outputs}")
         if len(self.data_config.x_list_columns_2d) != len(self.data_config.y_list_columns_2d):
-            raise ValueError("Number of 2D input and output columns must match")
+            logger.warning(f"Number of 2D input columns ({len(self.data_config.x_list_columns_2d)}) does not match number of 2D output columns ({len(self.data_config.y_list_columns_2d)}). This is allowed if some 2D inputs are input-only.")
     
+    def check_nans(self):
+        """Check for NaN values in the loaded DataFrame and log the count per column."""
+        if self.df is None:
+            logger.warning("No data loaded to check for NaNs.")
+            return
+        nan_counts = self.df.isna().sum()
+        total_nans = nan_counts.sum()
+        logger.info(f"Total NaN values in DataFrame: {total_nans}")
+        logger.info("NaN count per column:")
+        for col, count in nan_counts.items():
+            if count > 0:
+                logger.info(f"  {col}: {count}")
+
     def load_data(self) -> pd.DataFrame:
         """
         Load data from all specified paths.
@@ -105,7 +122,8 @@ class DataLoader:
         # Combine all DataFrames
         self.df = pd.concat(df_list, ignore_index=True)
         logger.info(f"Successfully loaded {len(self.df)} samples")
-        
+        # Check for NaNs after loading
+        self.check_nans()
         return self.df
     
     def preprocess_data(self) -> pd.DataFrame:
@@ -329,20 +347,20 @@ class DataLoader:
                 if np.isnan(x_array).any():
                     x_array = np.nan_to_num(x_array, nan=0.0)
                 
-            # Pad or truncate to target length
+                # Pad or truncate to target length
                 if len(x_array) > self.data_config.max_time_series_length:
                     x_array = x_array[:self.data_config.max_time_series_length]
-            
-            # Take last N elements
+                
+                # Take last N elements
                 if len(x_array) > self.data_config.time_series_length:
                     x_array = x_array[-self.data_config.time_series_length:]
-            
-            # Pad if shorter
+                
+                # Pad if shorter
                 if len(x_array) < self.data_config.time_series_length:
                     x_array = np.pad(x_array, (0, self.data_config.time_series_length - len(x_array)), 'constant')
             
                 return x_array
-        else:
+            else:
                 # For None, NaN, empty lists, or other invalid data
                 logger.debug(f"Invalid time series data for column {col}: {type(x)} = {x}")
                 return np.zeros(self.data_config.time_series_length, dtype=np.float32)
@@ -363,7 +381,7 @@ class DataLoader:
     def _process_1d_columns(self):
         """Process 1D list columns."""
         list_columns_1d = (
-            self.data_config.x_list_columns_1d + 
+            self.data_config.variables_1d_pft + 
             self.data_config.y_list_columns_1d
         )
         
@@ -390,26 +408,44 @@ class DataLoader:
             self.data_config.x_list_columns_2d + 
             self.data_config.y_list_columns_2d
         )
-        
         for col in list_columns_2d:
             if col not in self.df.columns:
                 logger.warning(f"2D column {col} not found in dataset")
                 continue
-            
             logger.debug(f"Processing 2D column: {col}")
-            
             # Convert to numpy arrays
             self.df[col] = self.df[col].apply(
                 lambda x: np.array(x) if isinstance(x, list) else x
             )
-            
+            # Impute NaNs with 0.0 in all arrays
+            # count the number of NaNs in the array
+            self.df[col] = self.df[col].apply(
+                lambda x: np.isnan(x).sum() if isinstance(x, np.ndarray) else 0
+            )
+            # print the number of NaNs in the array
+            logger.info(f"Number of NaNs in {col}: {self.df[col].sum()}")
+            self.df[col] = self.df[col].apply(
+                lambda x: np.nan_to_num(x, nan=0.0) if isinstance(x, np.ndarray) and np.isnan(x).any() else x
+            )
+            # Special handling for PFT parameter columns (should be 1D of length 17)
+            if col in self.data_config.x_list_columns_2d and col in self.data_config.x_list_columns_2d[-44:]:
+                # If 1D, reshape to (17, 1)
+                self.df[col] = self.df[col].apply(
+                    lambda x: x.reshape(17, 1) if isinstance(x, np.ndarray) and x.ndim == 1 and x.shape[0] == 17 else x
+                )
+            # Debug: Check array shapes
+            sample_values = self.df[col].dropna().head(5)
+            for i, val in enumerate(sample_values):
+                if isinstance(val, np.ndarray):
+                    logger.debug(f"Column {col}, sample {i}: shape={val.shape}, ndim={val.ndim}")
+                else:
+                    logger.debug(f"Column {col}, sample {i}: type={type(val)}, value={val}")
             # Truncate to specified dimensions
             self.df[col] = self.df[col].apply(
                 lambda x: x[:, :self.data_config.max_2d_cols] 
-                if isinstance(x, np.ndarray) and x.shape[1] >= self.data_config.max_2d_cols 
+                if isinstance(x, np.ndarray) and x.ndim == 2 and x.shape[1] >= self.data_config.max_2d_cols 
                 else x
             )
-            
             # Pad to uniform shape
             self.df[col] = self.df[col].apply(
                 lambda x: self._pad_2d_array(x, self.data_config.max_2d_rows, self.data_config.max_2d_cols)
@@ -447,45 +483,106 @@ class DataLoader:
     
     def normalize_data(self) -> Dict[str, Any]:
         """
-        Normalize all data types.
-        
+        Normalize all data types using config-defined column order.
         Returns:
             Dictionary containing normalized data and scalers
         """
         logger.info("Normalizing data...")
-        
-        # Get static and target columns
-        static_columns = self._get_static_columns()
-        target_columns = self._get_target_columns()
-        
-        # Normalize time series data
+        # Print config lists and DataFrame columns for debugging
+        # print('--- DEBUG: Config variable lists ---')
+        # print('x_list_scalar_columns:', self.data_config.x_list_scalar_columns)
+        # print('y_list_scalar_columns:', self.data_config.y_list_scalar_columns)
+        # print('variables_1d_pft:', self.data_config.variables_1d_pft)
+        # print('y_list_columns_1d:', self.data_config.y_list_columns_1d)
+        # print('x_list_columns_2d:', self.data_config.x_list_columns_2d)
+        # print('y_list_columns_2d:', self.data_config.y_list_columns_2d)
+        # print('pft_param_columns:', self.data_config.pft_param_columns)
+        # print('DataFrame columns:', list(self.df.columns))
+        # print('--- END DEBUG ---')
+
+        # Time series
         time_series_data, time_series_scaler = self._normalize_time_series()
         
-        # Normalize static data
-        static_data, static_scaler = self._normalize_static(static_columns)
-        
-        # Normalize target data
-        target_data, target_scaler = self._normalize_target(target_columns)
-        
-        # Normalize list data
-        list_1d_data, list_1d_scalers = self._normalize_list_1d()
-        list_2d_data, list_2d_scalers = self._normalize_list_2d()
-        
+        # Static
+        static_data, static_scaler = self._normalize_static(self.data_config.static_columns)
+
+        # Scalar
+        scalar_data, scalar_scaler = self._normalize_scalar()
+        y_scalar_data, y_scalar_scaler = self._normalize_y_scalar()
+
+        # 1D PFT
+        pft_1d_data, pft_1d_scaler = self._normalize_list_1d(self.data_config.variables_1d_pft)
+        y_pft_1d_data, y_pft_1d_scaler = self._normalize_list_1d(self.data_config.y_list_columns_1d)
+
+        # 2D Soil
+        variables_2d_soil, variables_2d_soil_scaler = self._normalize_list_2d(self.data_config.x_list_columns_2d)
+        y_soil_2d, y_soil_2d_scaler = self._normalize_list_2d(self.data_config.y_list_columns_2d)
+
+        # PFT param
+        pft_param_data, pft_param_scaler = self._normalize_pft_param()
+
+        # Water (if present)
+        water_tensor = None
+        y_water_tensor = None
+        if hasattr(self.data_config, 'x_list_water_columns') and self.data_config.x_list_water_columns:
+            water_tensor, water_scaler = self._normalize_list_1d(self.data_config.x_list_water_columns)
+        if hasattr(self.data_config, 'y_list_water_columns') and self.data_config.y_list_water_columns:
+            y_water_tensor, y_water_scaler = self._normalize_list_1d(self.data_config.y_list_water_columns)
+
+        # Print tensor shapes for debugging
+        # print('--- DEBUG: Normalized tensor shapes ---')
+        # print('time_series_data:', time_series_data.shape)
+        # print('static_data:', static_data.shape)
+        # print('scalar_data:', scalar_data.shape)
+        # print('y_scalar_data:', y_scalar_data.shape)
+        # print('pft_1d_data:', pft_1d_data.shape)
+        # print('y_pft_1d_data:', y_pft_1d_data.shape)
+        # print('variables_2d_soil:', variables_2d_soil.shape)
+        # print('y_soil_2d:', y_soil_2d.shape)
+        # print('pft_param_data:', pft_param_data.shape)
+        # if water_tensor is not None:
+        #     print('water_tensor:', water_tensor.shape)
+        # if y_water_tensor is not None:
+        #     print('y_water_tensor:', y_water_tensor.shape)
+        # print('--- END DEBUG ---')
+
+        # Assert lists are not empty
+        assert len(self.data_config.variables_1d_pft) > 0, 'variables_1d_pft list is empty!'
+        assert pft_1d_data.shape[1] == len(self.data_config.variables_1d_pft), 'Mismatch in 1D PFT feature count!'
+        assert scalar_data.shape[1] == len(self.data_config.x_list_scalar_columns), 'Mismatch in scalar feature count!'
+        assert variables_2d_soil.shape[1] == len(self.data_config.x_list_columns_2d), 'Mismatch in 2D soil feature count!'
+        assert pft_param_data.shape[1] == len(self.data_config.pft_param_columns), 'Mismatch in PFT param feature count!'
+        assert y_scalar_data.shape[1] == len(self.data_config.y_list_scalar_columns), 'Mismatch in y_scalar feature count!'
+        assert y_pft_1d_data.shape[1] == len(self.data_config.y_list_columns_1d), 'Mismatch in y_pft_1d feature count!'
+        assert y_soil_2d.shape[1] == len(self.data_config.y_list_columns_2d), 'Mismatch in y_soil_2d feature count!'
+
         # Store all scalers
         self.scalers = {
             'time_series': time_series_scaler,
             'static': static_scaler,
-            'target': target_scaler,
-            'list_1d': list_1d_scalers,
-            'list_2d': list_2d_scalers
+            'scalar': scalar_scaler,
+            'y_scalar': y_scalar_scaler,
+            'pft_1d': pft_1d_scaler,
+            'y_pft_1d': y_pft_1d_scaler,
+            'variables_2d_soil': variables_2d_soil_scaler,
+            'y_soil_2d': y_soil_2d_scaler,
+            'pft_param': pft_param_scaler,
+            'water': water_scaler if 'water_scaler' in locals() else None,
+            'y_water': y_water_scaler if 'y_water_scaler' in locals() else None
         }
         
         return {
             'time_series_data': time_series_data,
             'static_data': static_data,
-            'target_data': target_data,
-            'list_1d_data': list_1d_data,
-            'list_2d_data': list_2d_data,
+            'pft_param_data': pft_param_data,
+            'scalar_data': scalar_data,
+            'variables_1d_pft': pft_1d_data,
+            'variables_2d_soil': variables_2d_soil,
+            'y_scalar': y_scalar_data,
+            'y_pft_1d': y_pft_1d_data,
+            'y_soil_2d': y_soil_2d,
+            'water': water_tensor,
+            'y_water': y_water_tensor,
             'scalers': self.scalers
         }
     
@@ -513,18 +610,6 @@ class DataLoader:
         logger.info(f"Found {len(static_columns)} static columns from fixed config: {static_columns}")
         return static_columns
     
-    def _get_target_columns(self) -> List[str]:
-        """Get target columns (Y_ prefixed, excluding list targets)."""
-        all_columns = set(self.df.columns)
-        list_targets = set(self.data_config.y_list_columns_1d + self.data_config.y_list_columns_2d)
-        
-        target_columns = [
-            col for col in all_columns 
-            if col.startswith('Y_') and col not in list_targets
-        ]
-        
-        logger.info(f"Found {len(target_columns)} target columns")
-        return target_columns
     
     def _normalize_time_series(self) -> Tuple[torch.Tensor, Any]:
         """Normalize time series data."""
@@ -573,171 +658,142 @@ class DataLoader:
         return torch.tensor(time_series_data, dtype=self.preprocessing_config.data_type), scaler
     
     def _normalize_static(self, static_columns: List[str]) -> Tuple[torch.Tensor, Any]:
-        """Normalize static data."""
-        logger.info("Normalizing static data...")
-        
-        if not static_columns:
-            logger.warning("No static columns found. Creating empty tensor.")
-            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
-        
-        # Filter out any columns that might contain list data
-        valid_static_columns = []
-        for col in static_columns:
-            if col in self.df.columns:
-                # Double-check that the column doesn't contain list data
-                sample_values = self.df[col].dropna().head(5)
-                if len(sample_values) > 0:
-                    has_lists = any(isinstance(val, list) for val in sample_values)
-                    if not has_lists:
-                        valid_static_columns.append(col)
-                    else:
-                        logger.warning(f"Skipping column {col} from static normalization - contains list data")
-        
-        if not valid_static_columns:
-            logger.warning("No valid static columns found after filtering. Creating empty tensor.")
-            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
-        
-        logger.info(f"Normalizing {len(valid_static_columns)} static columns: {valid_static_columns}")
-        
-        # Extract static data and ensure it's numeric
-        static_data = self.df[valid_static_columns].values
-        
-        # Check for any non-numeric data
-        if not np.issubdtype(static_data.dtype, np.number):
-            logger.warning("Static data contains non-numeric values. Attempting to convert...")
-            try:
-                static_data = static_data.astype(np.float64)
-            except (ValueError, TypeError) as e:
-                logger.error(f"Failed to convert static data to numeric: {e}")
-                # Return empty tensor if conversion fails
-                return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
-        
-        # Handle NaN values
-        if np.isnan(static_data).any():
-            logger.warning("Static data contains NaN values. Filling with 0.")
-            static_data = np.nan_to_num(static_data, nan=0.0)
-        
+        """Normalize static data in the order defined by static_columns."""
+        logger.info(f"Normalizing static data with columns: {static_columns}")
+        # Enforce order
+        for i, col in enumerate(static_columns):
+            assert col in self.df.columns, f"Static column '{col}' missing in DataFrame!"
+        static_data = self.df[static_columns].values
         scaler = self._get_scaler(self.preprocessing_config.static_normalization)
         static_normalized = scaler.fit_transform(static_data)
-        
         return torch.tensor(static_normalized, dtype=self.preprocessing_config.data_type), scaler
     
-    def _normalize_target(self, target_columns: List[str]) -> Tuple[torch.Tensor, Any]:
-        """Normalize target data."""
-        logger.info("Normalizing target data...")
+    def _normalize_scalar(self) -> Tuple[torch.Tensor, Any]:
+        """Normalize scalar variables in the order defined by x_list_scalar_columns."""
+        scalar_columns = self.data_config.x_list_scalar_columns
+        logger.info(f"Normalizing scalar data with columns: {scalar_columns}")
+        for i, col in enumerate(scalar_columns):
+            assert col in self.df.columns, f"Scalar column '{col}' missing in DataFrame!"
+        scalar_data = self.df[scalar_columns].values
+        scaler = self._get_scaler(self.preprocessing_config.static_normalization)
+        scalar_normalized = scaler.fit_transform(scalar_data)
+        return torch.tensor(scalar_normalized, dtype=self.preprocessing_config.data_type), scaler
+
+    def _normalize_y_scalar(self) -> Tuple[torch.Tensor, Any]:
+        """Normalize y_scalar variables in the order defined by y_list_scalar_columns."""
+        y_scalar_columns = self.data_config.y_list_scalar_columns
+        logger.info(f"Normalizing y_scalar data with columns: {y_scalar_columns}")
+        for i, col in enumerate(y_scalar_columns):
+            assert col in self.df.columns, f"y_scalar column '{col}' missing in DataFrame!"
+        y_scalar_data = self.df[y_scalar_columns].values
+        scaler = self._get_scaler(self.preprocessing_config.static_normalization)
+        y_scalar_normalized = scaler.fit_transform(y_scalar_data)
+        return torch.tensor(y_scalar_normalized, dtype=self.preprocessing_config.data_type), scaler
+
+    def _normalize_list_1d(self, columns: List[str]) -> Tuple[torch.Tensor, Any]:
+        """Normalize 1D list data in the order defined by columns."""
+        logger.info(f"Normalizing 1D list data with columns: {columns}")
+        for i, col in enumerate(columns):
+            assert col in self.df.columns, f"1D column '{col}' missing in DataFrame!"
+        col_data = [np.vstack(self.df[col].values) for col in columns]
+        data = np.stack(col_data, axis=1)  # shape: (samples, features, length)
+        n_samples, n_features, n_length = data.shape
+        data_reshaped = data.reshape(n_samples, -1)
+        scaler = self._get_scaler(self.preprocessing_config.list_1d_normalization)
+        data_normalized = scaler.fit_transform(data_reshaped)
+        data_normalized = data_normalized.reshape(n_samples, n_features, n_length)
+        return torch.tensor(data_normalized, dtype=self.preprocessing_config.data_type), scaler
+
+    def _normalize_list_2d(self, columns: List[str]) -> Tuple[torch.Tensor, Any]:
+        """Normalize 2D list data in the order defined by columns."""
+        logger.info(f"Normalizing 2D list data with columns: {columns}")
+        for i, col in enumerate(columns):
+            assert col in self.df.columns, f"2D column '{col}' missing in DataFrame!"
+        col_data = [np.stack(self.df[col].values) for col in columns]
+        data = np.stack(col_data, axis=1)  # shape: (samples, features, rows, cols)
+        n_samples, n_features, n_rows, n_cols = data.shape
+        data_reshaped = data.reshape(n_samples, -1)
+        scaler = self._get_scaler(self.preprocessing_config.list_2d_normalization)
+        data_normalized = scaler.fit_transform(data_reshaped)
+        data_normalized = data_normalized.reshape(n_samples, n_features, n_rows, n_cols)
+        return torch.tensor(data_normalized, dtype=self.preprocessing_config.data_type), scaler
+
+    def _normalize_pft_param(self) -> Tuple[torch.Tensor, Any]:
+        """Normalize and stack pft_param data as [batch, 44, 17] in config order."""
+        pft_param_columns = self.data_config.pft_param_columns
+
+        num_params = len(pft_param_columns)
+        num_pfts = 17  # Always use 17 PFTs
+        logger.info(f"Normalizing pft_param data with columns: {pft_param_columns}")
+        # Enforce order and presence
+        for col in pft_param_columns:
+            assert col in self.df.columns, f"PFT param column '{col}' missing in DataFrame!"
+        # Stack in config order
+        param_matrix = []
+        for idx, row in self.df.iterrows():
+            row_vectors = []
+            for col in pft_param_columns:
+                val = row[col]
+                if isinstance(val, (list, np.ndarray)) and len(val) == num_pfts:
+                    row_vectors.append(np.array(val, dtype=np.float32))
+                else:
+                    row_vectors.append(np.zeros(num_pfts, dtype=np.float32))
+            row_matrix = np.stack(row_vectors, axis=0)  # [44, 17]
+            param_matrix.append(row_matrix)
+        param_matrix = np.stack(param_matrix, axis=0)  # [batch, 44, 17]
+        assert param_matrix.shape[1:] == (num_params, num_pfts), f"pft_param_data shape {param_matrix.shape} does not match [batch, 44, 17]"
+        # Flatten for normalization
+        flat_param_matrix = param_matrix.reshape(param_matrix.shape[0], -1)
+        scaler = self._get_scaler(self.preprocessing_config.list_1d_normalization)
+        flat_param_matrix_norm = scaler.fit_transform(flat_param_matrix)
+        param_matrix_norm = flat_param_matrix_norm.reshape(param_matrix.shape)
+        pft_param_data = torch.tensor(param_matrix_norm, dtype=self.preprocessing_config.data_type)
+        return pft_param_data, scaler
+
+
+    def _normalize_list_scalar(self) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+        """Normalize scalar data."""
+        logger.info("Normalizing scalar data...")
         
-        if not target_columns:
-            logger.warning("No target columns found. Creating empty tensor.")
-            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
-        
-        # Filter out any columns that might contain list data
-        valid_target_columns = []
-        for col in target_columns:
-            if col in self.df.columns:
-                # Check if the column contains list data
-                sample_values = self.df[col].dropna().head(5)
-                if len(sample_values) > 0:
-                    has_lists = any(isinstance(val, list) for val in sample_values)
-                    if not has_lists:
-                        valid_target_columns.append(col)
-                    else:
-                        logger.warning(f"Skipping column {col} from target normalization - contains list data")
-        
-        if not valid_target_columns:
-            logger.warning("No valid target columns found after filtering. Creating empty tensor.")
-            return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
-        
-        logger.info(f"Normalizing {len(valid_target_columns)} target columns: {valid_target_columns}")
-        
-        # Extract target data and ensure it's numeric
-        target_data = self.df[valid_target_columns].values
-        
-        # Check for any non-numeric data
-        if not np.issubdtype(target_data.dtype, np.number):
-            logger.warning("Target data contains non-numeric values. Attempting to convert...")
-            try:
-                target_data = target_data.astype(np.float64)
-            except (ValueError, TypeError) as e:
-                logger.error(f"Failed to convert target data to numeric: {e}")
-                # Return empty tensor if conversion fails
-                return torch.empty((len(self.df), 0), dtype=self.preprocessing_config.data_type), None
-        
-        # Handle NaN values
-        if np.isnan(target_data).any():
-            logger.warning("Target data contains NaN values. Filling with 0.")
-            target_data = np.nan_to_num(target_data, nan=0.0)
-        
-        scaler = self._get_scaler(self.preprocessing_config.target_normalization)
-        target_normalized = scaler.fit_transform(target_data)
-        
-        return torch.tensor(target_normalized, dtype=self.preprocessing_config.data_type), scaler
-    
-    def _normalize_list_1d(self) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
-        """Normalize 1D list data."""
-        logger.info("Normalizing 1D list data...")
-        
-        list_columns_1d = (
-            self.data_config.x_list_columns_1d + 
-            self.data_config.y_list_columns_1d
-        )
+        list_columns_scalar = (
+            self.data_config.x_list_scalar_columns + 
+            self.data_config.y_list_scalar_columns) 
         
         normalized_data = {}
         scalers = {}
         
-        for col in list_columns_1d:
+        for col in list_columns_scalar:
             if col not in self.df.columns:
                 continue
-            
             # Stack data
             col_data = np.vstack(self.df[col].values)
-            
-            # Normalize
             scaler = self._get_scaler(self.preprocessing_config.list_1d_normalization)
             col_normalized = scaler.fit_transform(col_data)
-            
-            # Convert to tensor
-            normalized_data[col] = torch.tensor(
-                col_normalized, dtype=self.preprocessing_config.data_type
-            )
+            normalized_data[col] = torch.tensor(col_normalized, dtype=self.preprocessing_config.data_type)
             scalers[col] = scaler
-        
         return normalized_data, scalers
     
-    def _normalize_list_2d(self) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
-        """Normalize 2D list data."""
-        logger.info("Normalizing 2D list data...")
+    def _concat_list_columns_2d(self, list_data: Dict[str, torch.Tensor], column_names: List[str]) -> torch.Tensor:
+        """
+        Concatenates 2D list data for a given set of column names.
+        This is useful when you have multiple 2D outputs and want to stack them.
+        """
+        concatenated_data = []
+        for col_name in column_names:
+            if col_name in list_data:
+                # Ensure the tensor is 2D and has the correct shape
+                tensor = list_data[col_name]
+                if tensor.ndim == 2 and tensor.shape[1] == 1: # Assuming 1D of length 1
+                    concatenated_data.append(tensor.squeeze(1)) # Remove the extra dimension
+                else:
+                    concatenated_data.append(tensor)
+            else:
+                logger.warning(f"Column '{col_name}' not found in list_data for concatenation.")
+                # Optionally, you could append a zero tensor or raise an error
+                concatenated_data.append(torch.zeros((len(self.df), self.data_config.max_2d_rows, self.data_config.max_2d_cols), dtype=self.preprocessing_config.data_type))
         
-        list_columns_2d = (
-            self.data_config.x_list_columns_2d + 
-            self.data_config.y_list_columns_2d
-        )
-        
-        normalized_data = {}
-        scalers = {}
-        
-        for col in list_columns_2d:
-            if col not in self.df.columns:
-                continue
-            
-            # Reshape data for normalization
-            col_data = np.vstack(self.df[col].values).reshape(-1, 1)
-            
-            # Normalize
-            scaler = self._get_scaler(self.preprocessing_config.list_2d_normalization)
-            col_normalized = scaler.fit_transform(col_data)
-            
-            # Reshape back
-            col_reshaped = col_normalized.reshape(
-                len(self.df), self.data_config.max_2d_rows, self.data_config.max_2d_cols
-            )
-            
-            # Convert to tensor
-            normalized_data[col] = torch.tensor(
-                col_reshaped, dtype=self.preprocessing_config.data_type
-            )
-            scalers[col] = scaler
-        
-        return normalized_data, scalers
+        # Stack the concatenated tensors along the first dimension (batch)
+        return torch.stack(concatenated_data, dim=1) # Stack along the 2nd dimension (features)
     
     def _get_scaler(self, normalization_type: str):
         """Get appropriate scaler based on normalization type."""
@@ -752,15 +808,12 @@ class DataLoader:
     
     def split_data(self, normalized_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Split data into training and testing sets.
-        
-        Args:
-            normalized_data: Dictionary containing normalized data
-            
-        Returns:
-            Dictionary containing train/test splits
+        Split normalized data into train and test sets.
         """
         logger.info("Splitting data into train/test sets...")
+
+        train_data = {}
+        test_data = {}
         
         total_samples = len(self.df)
         train_size = int(self.data_config.train_split * total_samples)
@@ -779,29 +832,59 @@ class DataLoader:
         # Split time series data
         train_time_series = normalized_data['time_series_data'][:train_size, :, :]
         test_time_series = normalized_data['time_series_data'][train_size:, :, :]
+        train_data['time_series'] = train_time_series
+        test_data['time_series'] = test_time_series
         
         # Split static data
         train_static = normalized_data['static_data'][:train_size]
         test_static = normalized_data['static_data'][train_size:]
+        train_data['static'] = train_static
+        test_data['static'] = test_static
         
-        # Split target data
-        train_target = normalized_data['target_data'][:train_size]
-        test_target = normalized_data['target_data'][train_size:]
+        # Split pft_param data
+        train_pft_param = normalized_data['pft_param_data'][:train_size]
+        test_pft_param = normalized_data['pft_param_data'][train_size:]
+        train_data['pft_param'] = train_pft_param
+        test_data['pft_param'] = test_pft_param
+
+        # Split scalar data (input)
+        train_list_scalar = normalized_data['scalar_data'][:train_size]
+        test_list_scalar = normalized_data['scalar_data'][train_size:]
+        train_data['scalar'] = train_list_scalar
+        test_data['scalar'] = test_list_scalar 
+
+        # Split y_scalar (target)
+        y_scalar = normalized_data['y_scalar']
+        train_data['y_scalar'] = y_scalar[:train_size]
+        test_data['y_scalar'] = y_scalar[train_size:]
+
+        # Split variables_1d_pft (input)
+        variables_1d_pft = normalized_data['variables_1d_pft']
+        train_data['variables_1d_pft'] = variables_1d_pft[:train_size]
+        test_data['variables_1d_pft'] = variables_1d_pft[train_size:]
         
-        # Split list data
-        train_list_1d = {
-            col: tensor[:train_size] for col, tensor in normalized_data['list_1d_data'].items()
-        }
-        test_list_1d = {
-            col: tensor[train_size:] for col, tensor in normalized_data['list_1d_data'].items()
-        }
+        # Split y_pft_1d (target)
+        y_pft_1d = normalized_data['y_pft_1d']
+        train_data['y_pft_1d'] = y_pft_1d[:train_size]
+        test_data['y_pft_1d'] = y_pft_1d[train_size:]
+
+        # Split y_soil_2d (target)
+        y_soil_2d = normalized_data['y_soil_2d']
+        train_data['y_soil_2d'] = y_soil_2d[:train_size]
+        test_data['y_soil_2d'] = y_soil_2d[train_size:]
+
+        # Split variables_2d_soil (input)
+        variables_2d_soil = normalized_data['variables_2d_soil']
+        train_data['variables_2d_soil'] = variables_2d_soil[:train_size]
+        test_data['variables_2d_soil'] = variables_2d_soil[train_size:]
         
-        train_list_2d = {
-            col: tensor[:train_size] for col, tensor in normalized_data['list_2d_data'].items()
-        }
-        test_list_2d = {
-            col: tensor[train_size:] for col, tensor in normalized_data['list_2d_data'].items()
-        }
+        # Split water data if present
+        if 'water' in normalized_data and normalized_data['water'] is not None:
+            train_data['water'] = normalized_data['water'][:train_size]
+            test_data['water'] = normalized_data['water'][train_size:]
+        if 'y_water' in normalized_data and normalized_data['y_water'] is not None:
+            train_data['y_water'] = normalized_data['y_water'][:train_size]
+            test_data['y_water'] = normalized_data['y_water'][train_size:]
         
         logger.info(f"Split completed:")
         logger.info(f"  - Train time_series shape: {train_time_series.shape}")
@@ -809,39 +892,43 @@ class DataLoader:
         logger.info(f"  - Train static shape: {train_static.shape}")
         logger.info(f"  - Test static shape: {test_static.shape}")
         
+        # Only keep final keys in output
+        final_keys = [
+            'time_series', 'static', 'pft_param', 'scalar',
+            'variables_1d_pft', 'variables_2d_soil',
+            'y_scalar', 'y_pft_1d', 'y_soil_2d'
+        ]   
+
+        # we need to make sure water is optional 
+        if 'water' in train_data:
+            final_keys.append('water')
+            final_keys.append('y_water')
+
+        train_data = {k: v for k, v in train_data.items() if k in final_keys}
+        test_data = {k: v for k, v in test_data.items() if k in final_keys}
+        
         return {
-            'train': {
-                'time_series': train_time_series,
-                'static': train_static,
-                'target': train_target,
-                'list_1d': train_list_1d,
-                'list_2d': train_list_2d
-            },
-            'test': {
-                'time_series': test_time_series,
-                'static': test_static,
-                'target': test_target,
-                'list_1d': test_list_1d,
-                'list_2d': test_list_2d
-            },
+            'train': train_data,
+            'test': test_data,
             'train_size': train_size,
             'test_size': test_size
         }
     
     def get_data_info(self) -> Dict[str, Any]:
-        """Get information about the loaded data."""
+        """Get information about the loaded data, ensuring all keys are present and correct."""
         if self.df is None:
             return {}
-        return {
+        data_info = {
             'total_samples': len(self.df),
             'time_series_columns': self.data_config.time_series_columns,
-            'static_columns': self._get_static_columns(),
-            'target_columns': self._get_target_columns(),
-            'x_list_columns_1d': self.data_config.x_list_columns_1d,
+            'static_columns': self.data_config.static_columns,
+            'pft_param_columns': self.data_config.pft_param_columns,
+            'variables_1d_pft': self.data_config.variables_1d_pft,  # Canonical 1D PFT variable list
             'y_list_columns_1d': self.data_config.y_list_columns_1d,
+            'x_list_scalar_columns': self.data_config.x_list_scalar_columns,
+            'y_list_scalar_columns': self.data_config.y_list_scalar_columns,
             'x_list_columns_2d': self.data_config.x_list_columns_2d,
-            'y_list_columns_2d': self.data_config.y_list_columns_2d,
-            'available_columns': list(self.df.columns),
-            'matrix_rows': self.data_config.max_2d_rows,
-            'matrix_cols': self.data_config.max_2d_cols
+            'y_list_columns_2d': self.data_config.y_list_columns_2d
         } 
+        # print('[DEBUG] get_data_info: variables_1d_pft =', data_info['variables_1d_pft'])
+        return data_info 

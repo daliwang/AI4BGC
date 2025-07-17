@@ -122,8 +122,8 @@ def analyze_scalar_predictions(cpu_file, gpu_file):
 def main():
     """Main function."""
     # Paths to the prediction files
-    cpu_file = "cpu_gpu_comparison/cpu_test_20250628_091137/predictions/scalar_predictions.csv"
-    gpu_file = "cpu_gpu_comparison/cpu_test_20250628_091137/cpu_gpu_comparison/gpu_test_20250628_091212/predictions/scalar_predictions.csv"
+    cpu_file = "cpu_gpu_comparison/cpu_test_20250628_091137/predictions/predictions_scalar.csv"
+    gpu_file = "cpu_gpu_comparison/cpu_test_20250628_091137/cpu_gpu_comparison/gpu_test_20250628_091212/predictions/predictions_scalar.csv"
     
     if not Path(cpu_file).exists():
         print(f"CPU file not found: {cpu_file}")

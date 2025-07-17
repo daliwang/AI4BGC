@@ -8,6 +8,7 @@
 #SBATCH --time=2:00:00
 #SBATCH --output=logs/interactive_%j.out
 #SBATCH --error=logs/interactive_%j.err
+#SBATCH --exclusive  # Request a dedicated node for this session
 
 # Load modules
 #module load python/3.9-anaconda-2021.11

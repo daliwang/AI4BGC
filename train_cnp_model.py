@@ -21,9 +21,13 @@ Usage:
 
 import sys
 import os
+import json
+import torch
+import torch.nn as nn
 import logging
 import argparse
 from pathlib import Path
+from datetime import datetime
 
 # Add the project root to the Python path
 sys.path.append(str(Path(__file__).parent))
@@ -34,14 +38,14 @@ from models.cnp_combined_model import CNPCombinedModel
 from training.trainer import ModelTrainer
 
 
-def setup_logging(level: str = 'INFO') -> None:
-    """Set up logging configuration."""
+def setup_logging(log_file: str, level: str = 'INFO') -> None:
+    """Set up logging configuration with a specific log file."""
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler('cnp_training.log')
+            logging.FileHandler(log_file)
         ]
     )
 
@@ -91,13 +95,15 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup logging
-    setup_logging(args.log_level)
-    logger = logging.getLogger(__name__)
-    
-    # Create output directory
-    output_dir = Path(args.output_dir)
+    # Create output directory with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = Path(args.output_dir) / f"run_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Setup logging with timestamped log file in output directory
+    log_file = output_dir / f"cnp_training_{timestamp}.log"
+    setup_logging(str(log_file), args.log_level if args.log_level else 'WARNING')
+    logger = logging.getLogger(__name__)
     logger.info(f"Output directory: {output_dir}")
     
     try:
@@ -115,17 +121,39 @@ def main():
         else:
             config = get_cnp_model_config(include_water=False)
             logger.info("Using CNP configuration without water variables")
-        
+        # Ensure GPU and all files
+        config.update_training_config(device='cuda')
+        config.update_data_config(max_files=None)
+        # Turn off GPU monitoring and debug logging
+        config.update_training_config(log_gpu_memory=False, log_gpu_utilization=False)
         # Override training parameters if specified
         config.update_training_config(
-            num_epochs=args.epochs,
+            num_epochs=args.epochs,  
             batch_size=args.batch_size,
-            learning_rate=args.learning_rate,
+            learning_rate=args.learning_rate * 0.1 if args.learning_rate else 0.0001,
             model_save_path=str(output_dir / "cnp_model.pt"),
             losses_save_path=str(output_dir / "cnp_training_losses.csv"),
             predictions_dir=str(output_dir / "cnp_predictions")
         )
         
+        # --- FORCE 2D COLUMN ALIGNMENT FOR SAFETY ---
+        aligned_2d_vars = [
+            'cwdc_vr', 'cwdn_vr', 'secondp_vr', 'cwdp_vr',
+            'litr1c_vr', 'litr2c_vr', 'litr3c_vr',
+            'litr1n_vr', 'litr2n_vr', 'litr3n_vr',
+            'litr1p_vr', 'litr2p_vr', 'litr3p_vr',
+            'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
+            'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
+            'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
+            'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
+        ]
+        config.data_config.x_list_columns_2d = aligned_2d_vars
+        config.data_config.y_list_columns_2d = ['Y_' + v for v in aligned_2d_vars]
+        # print('x_list_columns_2d (forced):', config.data_config.x_list_columns_2d)
+        # print('y_list_columns_2d (forced):', config.data_config.y_list_columns_2d)
+        assert config.data_config.y_list_columns_2d == ['Y_' + v for v in config.data_config.x_list_columns_2d], \
+            f"2D columns not aligned!\nX: {config.data_config.x_list_columns_2d}\nY: {config.data_config.y_list_columns_2d}"
+
         # Initialize data loader
         logger.info("Initializing data loader...")
         data_loader = DataLoader(
@@ -135,61 +163,61 @@ def main():
         
         # Load and preprocess data
         logger.info("Loading and preprocessing data...")
-        df = data_loader.load_data()
-        df = data_loader.preprocess_data()
-        
-        # Get data information
+        data_loader.load_data()
+        data_loader.preprocess_data()
         data_info = data_loader.get_data_info()
-        logger.info(f"Data info: {data_info}")
-        
-        # Log variable counts
-        logger.info(f"Time series variables: {len(data_info['time_series_columns'])}")
-        logger.info(f"Surface properties: {len(data_info['static_columns'])}")
-        logger.info(f"1D input variables: {len(data_info['x_list_columns_1d'])}")
-        logger.info(f"2D input variables: {len(data_info['x_list_columns_2d'])}")
-        logger.info(f"1D output variables: {len(data_info['y_list_columns_1d'])}")
-        logger.info(f"2D output variables: {len(data_info['y_list_columns_2d'])}")
         
         # Normalize data
         logger.info("Normalizing data...")
         normalized_data = data_loader.normalize_data()
         
         # Split data
-        logger.info("Splitting data...")
+        logger.info("Splitting data into train/test sets...")
         split_data = data_loader.split_data(normalized_data)
+        train_data = split_data['train']
+        test_data = split_data['test']
         
+        # print(f"Training samples: {train_data['time_series'].shape[0]}")
+        # print(f"Validation/Evaluation samples: {test_data['time_series'].shape[0]}")
+        
+        # Debug print for pft_param
+        # if 'pft_param' in train_data:
+        #     print('[DEBUG] pft_param shape (train):', train_data['pft_param'].shape)
+        # else:
+        #     print('[DEBUG] pft_param not found in train split!')
+        # if 'pft_param' in test_data:
+        #     print('[DEBUG] pft_param shape (test):', test_data['pft_param'].shape)
+        # else:
+        #     print('[DEBUG] pft_param not found in test split!')
+
+        # Debug: Print train_data keys and check for y_scalar
+        # print('DEBUG: train_data keys:', train_data.keys())
+        # print('DEBUG: y_scalar in train_data:', 'y_scalar' in train_data)
+
         # Create CNP model
         logger.info("Creating CNP model...")
-        
-        # Calculate actual data dimensions
-        actual_1d_size = None
-        actual_2d_channels = None
-        
-        # Check if we have 1D data and get its actual size
-        if split_data['train']['list_1d']:
-            actual_1d_size = len(data_info['x_list_columns_1d']) * config.model_config.vector_length
-            logger.info(f"Detected actual 1D input size: {actual_1d_size}")
-        
-        # Check if we have 2D data and get its actual channels
-        if split_data['train']['list_2d']:
-            actual_2d_channels = len(data_info['x_list_columns_2d'])
-            logger.info(f"Detected actual 2D channels: {actual_2d_channels}")
-        
+
         model = CNPCombinedModel(
             config.model_config,
             data_info,
             include_water=include_water,
-            actual_1d_size=actual_1d_size,
-            actual_2d_channels=actual_2d_channels
+            use_learnable_loss_weights=config.training_config.use_learnable_loss_weights
         )
+        
+        # Ensure proper initialization for all layers
+        for module in model.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_normal_(module.weight, gain=0.5)  # Lower gain for stability
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
         
         # Initialize trainer
         logger.info("Initializing trainer...")
         trainer = ModelTrainer(
             config.training_config,
             model,
-            split_data['train'],
-            split_data['test'],
+            train_data,
+            test_data,
             normalized_data['scalers'],
             data_info
         )
@@ -202,7 +230,7 @@ def main():
         logger.info(f"Final metrics: {results['metrics']}")
         
         # Save results to output directory
-        import json
+
         with open(output_dir / "cnp_metrics.json", "w") as f:
             json.dump(results['metrics'], f, indent=2)
         
