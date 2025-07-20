@@ -50,8 +50,8 @@ class DataConfig:
         'PCT_SAND_9', 'SCALARAVG_vr_0', 'SCALARAVG_vr_1', 'SCALARAVG_vr_2', 'SCALARAVG_vr_3',
         'SCALARAVG_vr_4', 'SCALARAVG_vr_5', 'SCALARAVG_vr_6', 'SCALARAVG_vr_7', 'SCALARAVG_vr_8',
         'SCALARAVG_vr_9', 'SCALARAVG_vr_10', 'SCALARAVG_vr_11', 'SCALARAVG_vr_12', 'SCALARAVG_vr_13',
-        'SCALARAVG_vr_14', 'SOIL_ORDER', 'SOIL_COLOR', 'SNOWDP', 'peatf', 'abm', 'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
-        'H2OSOI_10CM', 'NPP', 'GPP', 'HR', 'AR'
+        'SCALARAVG_vr_14', 'SOIL_ORDER', 'SOIL_COLOR', 'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
+        'H2OSOI_10CM'
     ])
     
     # Reorganized input groups for enhanced model
@@ -165,7 +165,7 @@ class TrainingConfig:
     # Basic training parameters
     num_epochs: int = 50
     batch_size: int = 16
-    learning_rate: float = 0.001
+    learning_rate: float = 0.0001
     
     # Loss weights (can be adjusted for different output priorities)
     scalar_loss_weight: float = 1.0
@@ -756,9 +756,7 @@ def get_reorganized_dataset3_config() -> TrainingConfigManager:
             'SCALARAVG_vr_10', 'SCALARAVG_vr_11', 'SCALARAVG_vr_12', 'SCALARAVG_vr_13', 'SCALARAVG_vr_14',
             'SOIL_ORDER', 'SOIL_COLOR',
             # Auxiliary variables
-            'SNOWDP', 'peatf', 'abm', 'GPP', 'HR', 'AR', 'NPP', 'COL_FIRE_CLOSS',
-            'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
-            'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr', 'LAKE_SOILC', 'taf'
+            'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P'
         ],
         # Water group columns (separate processing)
         water_group_columns=[
@@ -867,9 +865,8 @@ def get_grouped_enhanced_dataset3_config() -> TrainingConfigManager:
             'SCALARAVG_vr_0', 'SCALARAVG_vr_1', 'SCALARAVG_vr_2', 'SCALARAVG_vr_3', 'SCALARAVG_vr_4',
             'SCALARAVG_vr_5', 'SCALARAVG_vr_6', 'SCALARAVG_vr_7', 'SCALARAVG_vr_8', 'SCALARAVG_vr_9',
             'SCALARAVG_vr_10', 'SCALARAVG_vr_11', 'SCALARAVG_vr_12', 'SCALARAVG_vr_13', 'SCALARAVG_vr_14',
-            'SOIL_ORDER', 'SOIL_COLOR', 'SNOWDP', 'peatf', 'abm', 'NPP', 'GPP', 'HR', 'AR', 
-            'COL_FIRE_CLOSS', 'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
-            'H2OSOI_10CM', 'Y_NPP', 'Y_GPP', 'Y_HR', 'Y_AR', 'Y_COL_FIRE_CLOSS'
+            'SOIL_ORDER', 'SOIL_COLOR', 'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
+            'H2OSOI_10CM'
         ],
         # Water group columns
         water_group_columns=['H2OCAN', 'H2OSFC', 'H2OSNO', 'H2OSOI_LIQ', 'H2OSOI_ICE', 'H2OSOI_10CM'],
@@ -1056,30 +1053,77 @@ def get_combined_dataset_config() -> TrainingConfigManager:
     return config 
 
 
-def get_cnp_model_config(include_water: bool = True) -> TrainingConfigManager:
+def get_cnp_model_config(include_water: bool = False, max_files: Optional[int] = None, use_trendy1: Optional[bool] = None, use_trendy05: Optional[bool] = None) -> TrainingConfigManager:
     """
-    Get CNP model configuration based on CNP_IO_list1.txt structure.
-    
+    Get CNP model configuration for Trendy_1_data_CNP and/or Trendy_05_data_CNP, optionally including water variables.
     Args:
-        include_water: Whether to include water variables in both input and output
-        
+        include_water: Whether to include water variables
+        max_files: Maximum number of files to use from the dataset
+        use_trendy1: Whether to include Trendy_1_data_CNP
+        use_trendy05: Whether to include Trendy_05_data_CNP
     Returns:
-        TrainingConfigManager with CNP model configuration
+        TrainingConfigManager with configuration for selected datasets
+    """
+    # Default logic: if neither is specified, use Trendy_1 only (for backward compatibility)
+    if use_trendy1 is None and use_trendy05 is None:
+        use_trendy1_val = True
+        use_trendy05_val = False
+    else:
+        use_trendy1_val = bool(use_trendy1)
+        use_trendy05_val = bool(use_trendy05)
+    config = get_cnp_combined_config(use_trendy1=use_trendy1_val, use_trendy05=use_trendy05_val, max_files=max_files, include_water=include_water)
+    return config
+
+
+def get_cnp_model_config_with_water() -> TrainingConfigManager:
+    """
+    Get CNP model configuration without water variables.
+    
+    Returns:
+        TrainingConfigManager with CNP model configuration (no water)
+    """
+    return get_cnp_model_config(include_water=True) 
+
+
+def get_cnp_combined_config(
+    use_trendy1: bool = True,
+    use_trendy05: bool = True,
+    max_files: Optional[int] = None,
+    include_water: bool = False
+) -> TrainingConfigManager:
+    """
+    Get CNP model configuration for Trendy_1_data_CNP, Trendy_05_data_CNP, or both.
+    Args:
+        use_trendy1: Whether to include Trendy_1_data_CNP
+        use_trendy05: Whether to include Trendy_05_data_CNP
+        max_files: Maximum number of files to use from each dataset
+    Returns:
+        TrainingConfigManager with combined configuration
     """
     config = TrainingConfigManager()
-    
-    # Data paths for Dataset 3
+    data_paths = []
+    file_patterns = []
+    if use_trendy1:
+        data_paths.append("/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trendy_1_data_CNP")
+        file_patterns.append("dataset_part_*.pkl")
+    if use_trendy05:
+        data_paths.append("/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trendy_05_data_CNP")
+        file_patterns.append("1_training_data_batch_*.pkl")
+    # If only one dataset, use its pattern as a string, else use a list
+    file_pattern = file_patterns[0] if len(file_patterns) == 1 else file_patterns
+    # Ensure 1D input/output columns match
+
     config.update_data_config(
-        data_paths=["/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trend_1_data_CNP"],
-        file_pattern="dataset_part_*.pkl",  # Match the actual file naming pattern
-        max_files=5,  # Use only 1 file for testing
+        data_paths=data_paths,
+        file_pattern=file_pattern,
+        max_files=max_files,
         train_split=0.8,
-        filter_column=None,  # Remove filtering to use all samples
-        time_series_length=240,  # 20 years * 12 months
+        filter_column=None,
+        time_series_length=240,
         max_time_series_length=240,
         max_1d_length=16,
-        max_2d_rows=18,  # Only first row of soil data
-        max_2d_cols=10,  # First 10 columns
+        max_2d_rows=18,
+        max_2d_cols=10,
     )
     
     # Time series variables (6 variables)
@@ -1097,7 +1141,7 @@ def get_cnp_model_config(include_water: bool = True) -> TrainingConfigManager:
         'PCT_NAT_PFT_0', 'PCT_NAT_PFT_1', 'PCT_NAT_PFT_2', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_4', 
         'PCT_NAT_PFT_5', 'PCT_NAT_PFT_6', 'PCT_NAT_PFT_7', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 
         'PCT_NAT_PFT_10', 'PCT_NAT_PFT_11', 'PCT_NAT_PFT_12', 'PCT_NAT_PFT_13', 'PCT_NAT_PFT_14', 
-        'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_NATVEG', 'SNOWDP',
+        'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_NATVEG',
         # Soil Texture (10 variables) - using actual dataset column names
         'PCT_CLAY_0', 'PCT_CLAY_1', 'PCT_CLAY_2', 'PCT_CLAY_3', 'PCT_CLAY_4', 
         'PCT_CLAY_5', 'PCT_CLAY_6', 'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9',
@@ -1152,7 +1196,7 @@ def get_cnp_model_config(include_water: bool = True) -> TrainingConfigManager:
     # Temperature variables excluded for first experiments
     # output_temperature = ['Y_T_GRND_R', 'Y_T_GRND_U', 'Y_T_LAKE', 'Y_T_SOISNO', 'Y_T_GRND_1_', 'Y_T_GRND_2_', 'Y_T_GRND_3_']
     
-    # Scalar outputs (5 variables) - according to CNP_IO_list1.txt
+    # Scalar outputs (4 variables) - according to CNP_IO_list1.txt
     output_scalar = ['Y_GPP', 'Y_NPP', 'Y_AR', 'Y_HR']
     
     # 1D PFT outputs (14 variables) - according to CNP_IO_list1.txt
@@ -1287,14 +1331,4 @@ def get_cnp_model_config(include_water: bool = True) -> TrainingConfigManager:
         predictions_dir="cnp_predictions_test"  # Different name for test
     )
     
-    return config
-
-
-def get_cnp_model_config_no_water() -> TrainingConfigManager:
-    """
-    Get CNP model configuration without water variables.
-    
-    Returns:
-        TrainingConfigManager with CNP model configuration (no water)
-    """
-    return get_cnp_model_config(include_water=False) 
+    return config 

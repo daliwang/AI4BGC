@@ -16,7 +16,7 @@ CNP_IO_list1.txt structure with the following architecture:
 - Multi-task perceptrons for separate predictions
 
 Usage:
-    python train_cnp_model.py [--include-water] [--no-water]
+    python train_cnp_model.py [--with-water]
 """
 
 import sys
@@ -32,7 +32,7 @@ from datetime import datetime
 # Add the project root to the Python path
 sys.path.append(str(Path(__file__).parent))
 
-from config.training_config import get_cnp_model_config, get_cnp_model_config_no_water
+from config.training_config import get_cnp_model_config, get_cnp_model_config_with_water
 from data.data_loader import DataLoader
 from models.cnp_combined_model import CNPCombinedModel
 from training.trainer import ModelTrainer
@@ -54,14 +54,9 @@ def main():
     """Main training function for CNP model."""
     parser = argparse.ArgumentParser(description='CNP Model Training')
     parser.add_argument(
-        '--include-water', 
+        '--with-water',
         action='store_true',
-        help='Include water variables in both input and output'
-    )
-    parser.add_argument(
-        '--no-water', 
-        action='store_true',
-        help='Exclude water variables from both input and output'
+        help='Include water variables in both input and output (default: no water)'
     )
     parser.add_argument(
         '--log-level', 
@@ -77,20 +72,31 @@ def main():
     parser.add_argument(
         '--epochs',
         type=int,
-        default=100,
+        default=50,
         help='Number of training epochs'
     )
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=32,
+        default=128,
         help='Batch size for training'
     )
     parser.add_argument(
         '--learning-rate',
         type=float,
-        default=0.001,
+        default=0.0001,
         help='Learning rate'
+    )
+
+    parser.add_argument(
+        '--use-trendy1',
+        action='store_true',
+        help='Include Trendy_1_data_CNP dataset'
+    )
+    parser.add_argument(
+        '--use-trendy05',
+        action='store_true',
+        help='Include Trend_05_data_CNP dataset'
     )
     
     args = parser.parse_args()
@@ -106,21 +112,31 @@ def main():
     logger = logging.getLogger(__name__)
     logger.info(f"Output directory: {output_dir}")
     
+    if not args.use_trendy1 and not args.use_trendy05:
+        args.use_trendy1 = True
+        args.use_trendy05 = False
+
     try:
-        # Determine water inclusion
-        if args.include_water and args.no_water:
-            raise ValueError("Cannot specify both --include-water and --no-water")
-        
-        include_water = args.include_water if args.include_water else not args.no_water
+        include_water = args.with_water
         logger.info(f"Water variables included: {include_water}")
         
         # Get configuration
         if include_water:
-            config = get_cnp_model_config(include_water=True)
+            config = get_cnp_model_config(
+                include_water=True,
+                use_trendy1=args.use_trendy1,
+                use_trendy05=args.use_trendy05
+            )
             logger.info("Using CNP configuration with water variables")
         else:
-            config = get_cnp_model_config(include_water=False)
+            config = get_cnp_model_config(
+                include_water=False,
+                use_trendy1=args.use_trendy1,
+                use_trendy05=args.use_trendy05
+            )
             logger.info("Using CNP configuration without water variables")
+        # Set train/validation split to 70/30
+        config.update_data_config(train_split=0.7)
         # Ensure GPU and all files
         config.update_training_config(device='cuda')
         config.update_data_config(max_files=None)
@@ -133,7 +149,8 @@ def main():
             learning_rate=args.learning_rate * 0.1 if args.learning_rate else 0.0001,
             model_save_path=str(output_dir / "cnp_model.pt"),
             losses_save_path=str(output_dir / "cnp_training_losses.csv"),
-            predictions_dir=str(output_dir / "cnp_predictions")
+            predictions_dir=str(output_dir / "cnp_predictions"),
+            use_early_stopping=False
         )
         
         # --- FORCE 2D COLUMN ALIGNMENT FOR SAFETY ---
