@@ -15,9 +15,9 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 #from config.training_config import get_dataset1_config
-from config.training_config import get_minimal_config
+from config.training_config import get_default_config
 from data.data_loader import DataLoader
-from models.combined_model import CombinedModel
+from models.cnp_combined_model import CNPCombinedModel
 from training.trainer import ModelTrainer
 from utils.gpu_monitor import GPUMonitor
 
@@ -50,10 +50,7 @@ def main():
     
     try:
         # Get configuration
-        # config = get_dataset1_config()
-        config = get_minimal_config()
-        config.data_config.variables_1d_pft = config.data_config.x_list_columns_1d
-        config.data_config.pft_param_columns = []
+        config = get_default_config()
         
         
         # Update configuration paths to save in output directory
@@ -91,7 +88,7 @@ def main():
         
         # Create model
         logger.info("Creating model...")
-        model = CombinedModel(config.model_config, data_info)
+        model = CNPCombinedModel(config.model_config, data_info)
         
         # Initialize trainer
         logger.info("Initializing trainer...")

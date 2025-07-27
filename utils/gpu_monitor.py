@@ -94,7 +94,7 @@ class GPUMonitor:
         """Empty GPU cache."""
         if self.is_cuda:
             torch.cuda.empty_cache()
-            logger.debug("GPU cache emptied")
+    
     
     def get_system_memory(self) -> Dict[str, float]:
         """Get system memory information."""

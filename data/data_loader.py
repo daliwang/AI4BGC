@@ -53,8 +53,8 @@ class DataLoader:
         if not self.data_config.time_series_columns:
             raise ValueError("Time series columns cannot be empty")
         # Check for matching input/output pairs for 1D
-        if len(self.data_config.variables_1d_pft) != len(self.data_config.y_list_columns_1d):
-            raise ValueError("Number of 1D input (variables_1d_pft) and output columns must match")
+        if len(self.data_config.x_list_columns_1d) != len(self.data_config.y_list_columns_1d):
+            raise ValueError("Number of 1D input (x_list_columns_1d) and output columns must match")
         # Relaxed check for 2D: all outputs must be in inputs, but inputs can have extras
         def strip_y(col):
             return col[2:] if col.startswith('Y_') else col
@@ -109,7 +109,7 @@ class DataLoader:
         df_list = []
         for file in input_files:
             try:
-                logger.debug(f"Loading {file}...")
+    
                 batch_df = pd.read_pickle(file)
                 df_list.append(batch_df)
             except Exception as e:
@@ -122,8 +122,7 @@ class DataLoader:
         # Combine all DataFrames
         self.df = pd.concat(df_list, ignore_index=True)
         logger.info(f"Successfully loaded {len(self.df)} samples")
-        # Check for NaNs after loading
-        self.check_nans()
+
         return self.df
     
     def preprocess_data(self) -> pd.DataFrame:
@@ -257,36 +256,7 @@ class DataLoader:
         else:
             logger.info("No specific column filtering applied")
         
-        # Filter NaN values in time series columns if enabled
-        if self.data_config.filter_time_series_nan:
-            logger.info("Filtering NaN values in time series columns...")
-            initial_size = len(self.df)
-            
-            # Check each time series column for NaN values
-            for col in self.data_config.time_series_columns:
-                if col in self.df.columns:
-                    # Count samples with problematic time series data
-                    problematic_mask = []
-                    for idx, value in enumerate(self.df[col]):
-                        is_problematic = (
-                            not isinstance(value, (list, np.ndarray)) or 
-                            (isinstance(value, (list, np.ndarray)) and len(value) == 0) or
-                            (isinstance(value, (list, np.ndarray)) and np.isnan(value).any())
-                        )
-                        problematic_mask.append(is_problematic)
-                    
-                    problematic_count = sum(problematic_mask)
-                    if problematic_count > 0:
-                        logger.info(f"Column {col}: {problematic_count} problematic samples out of {len(self.df)}")
-                        # Remove problematic samples
-                        self.df = self.df[~np.array(problematic_mask)].reset_index(drop=True)
-                        logger.info(f"Removed {problematic_count} samples with problematic data in {col}")
-            
-            final_size = len(self.df)
-            logger.info(f"Time series filtering: {initial_size} -> {final_size} samples")
-            logger.info(f"Removed {initial_size - final_size} samples due to NaN/invalid time series data")
-        else:
-            logger.info("No time series NaN filtering applied")
+        # Skip time series NaN filtering for performance in CNP model
     
     def _process_time_series(self):
         """Process time series columns."""
@@ -297,15 +267,13 @@ class DataLoader:
                 logger.warning(f"Time series column {col} not found in dataset")
                 continue
             
-            logger.debug(f"Processing time series column: {col}")
+            
             
             # Check for problematic data before processing
             problematic_samples = []
             for idx, value in enumerate(self.df[col]):
                 if not isinstance(value, (list, np.ndarray)) or (isinstance(value, (list, np.ndarray)) and len(value) == 0):
                     problematic_samples.append((idx, type(value), value))
-                    if len(problematic_samples) <= 5:  # Only log first 5 problematic samples
-                        logger.debug(f"Sample {idx} has problematic data: {type(value)} = {value}")
             
             if problematic_samples:
                 logger.warning(f"Found {len(problematic_samples)} samples with problematic time series data in column {col}")
@@ -323,8 +291,7 @@ class DataLoader:
                 x_array = np.array(x, dtype=np.float32)
                 
                 # Handle NaN values
-                if np.isnan(x_array).any():
-                    x_array = np.nan_to_num(x_array, nan=0.0)
+                x_array = np.nan_to_num(x_array, nan=0.0)
                 
                 # Pad or truncate to target length
                 if len(x_array) > self.data_config.max_time_series_length:
@@ -344,8 +311,7 @@ class DataLoader:
                 x_array = x.astype(np.float32)
                 
                 # Handle NaN values
-                if np.isnan(x_array).any():
-                    x_array = np.nan_to_num(x_array, nan=0.0)
+                x_array = np.nan_to_num(x_array, nan=0.0)
                 
                 # Pad or truncate to target length
                 if len(x_array) > self.data_config.max_time_series_length:
@@ -362,7 +328,7 @@ class DataLoader:
                 return x_array
             else:
                 # For None, NaN, empty lists, or other invalid data
-                logger.debug(f"Invalid time series data for column {col}: {type(x)} = {x}")
+                
                 return np.zeros(self.data_config.time_series_length, dtype=np.float32)
         except Exception as e:
             logger.warning(f"Error processing time series item for column {col}: {e}, using zeros")
@@ -381,7 +347,7 @@ class DataLoader:
     def _process_1d_columns(self):
         """Process 1D list columns."""
         list_columns_1d = (
-            self.data_config.variables_1d_pft + 
+            self.data_config.x_list_columns_1d + 
             self.data_config.y_list_columns_1d
         )
         
@@ -390,7 +356,7 @@ class DataLoader:
                 logger.warning(f"1D column {col} not found in dataset")
                 continue
             
-            logger.debug(f"Processing 1D column: {col}")
+
             
             # Truncate to specified length
             self.df[col] = self.df[col].apply(
@@ -412,20 +378,14 @@ class DataLoader:
             if col not in self.df.columns:
                 logger.warning(f"2D column {col} not found in dataset")
                 continue
-            logger.debug(f"Processing 2D column: {col}")
+
             # Convert to numpy arrays
             self.df[col] = self.df[col].apply(
                 lambda x: np.array(x) if isinstance(x, list) else x
             )
             # Impute NaNs with 0.0 in all arrays
-            # count the number of NaNs in the array
             self.df[col] = self.df[col].apply(
-                lambda x: np.isnan(x).sum() if isinstance(x, np.ndarray) else 0
-            )
-            # print the number of NaNs in the array
-            logger.info(f"Number of NaNs in {col}: {self.df[col].sum()}")
-            self.df[col] = self.df[col].apply(
-                lambda x: np.nan_to_num(x, nan=0.0) if isinstance(x, np.ndarray) and np.isnan(x).any() else x
+                lambda x: np.nan_to_num(x, nan=0.0) if isinstance(x, np.ndarray) else x
             )
             # Special handling for PFT parameter columns (should be 1D of length 17)
             if col in self.data_config.x_list_columns_2d and col in self.data_config.x_list_columns_2d[-44:]:
@@ -434,12 +394,6 @@ class DataLoader:
                     lambda x: x.reshape(17, 1) if isinstance(x, np.ndarray) and x.ndim == 1 and x.shape[0] == 17 else x
                 )
             # Debug: Check array shapes
-            sample_values = self.df[col].dropna().head(5)
-            for i, val in enumerate(sample_values):
-                if isinstance(val, np.ndarray):
-                    logger.debug(f"Column {col}, sample {i}: shape={val.shape}, ndim={val.ndim}")
-                else:
-                    logger.debug(f"Column {col}, sample {i}: type={type(val)}, value={val}")
             # Truncate to specified dimensions
             self.df[col] = self.df[col].apply(
                 lambda x: x[:, :self.data_config.max_2d_cols] 
@@ -488,17 +442,7 @@ class DataLoader:
             Dictionary containing normalized data and scalers
         """
         logger.info("Normalizing data...")
-        # Print config lists and DataFrame columns for debugging
-        # print('--- DEBUG: Config variable lists ---')
-        # print('x_list_scalar_columns:', self.data_config.x_list_scalar_columns)
-        # print('y_list_scalar_columns:', self.data_config.y_list_scalar_columns)
-        # print('variables_1d_pft:', self.data_config.variables_1d_pft)
-        # print('y_list_columns_1d:', self.data_config.y_list_columns_1d)
-        # print('x_list_columns_2d:', self.data_config.x_list_columns_2d)
-        # print('y_list_columns_2d:', self.data_config.y_list_columns_2d)
-        # print('pft_param_columns:', self.data_config.pft_param_columns)
-        # print('DataFrame columns:', list(self.df.columns))
-        # print('--- END DEBUG ---')
+
 
         # Time series
         time_series_data, time_series_scaler = self._normalize_time_series()
@@ -511,7 +455,7 @@ class DataLoader:
         y_scalar_data, y_scalar_scaler = self._normalize_y_scalar()
 
         # 1D PFT
-        pft_1d_data, pft_1d_scaler = self._normalize_list_1d(self.data_config.variables_1d_pft)
+        pft_1d_data, pft_1d_scaler = self._normalize_list_1d(self.data_config.x_list_columns_1d)
         y_pft_1d_data, y_pft_1d_scaler = self._normalize_list_1d(self.data_config.y_list_columns_1d)
 
         # 2D Soil
@@ -529,26 +473,11 @@ class DataLoader:
         if hasattr(self.data_config, 'y_list_water_columns') and self.data_config.y_list_water_columns:
             y_water_tensor, y_water_scaler = self._normalize_list_1d(self.data_config.y_list_water_columns)
 
-        # Print tensor shapes for debugging
-        # print('--- DEBUG: Normalized tensor shapes ---')
-        # print('time_series_data:', time_series_data.shape)
-        # print('static_data:', static_data.shape)
-        # print('scalar_data:', scalar_data.shape)
-        # print('y_scalar_data:', y_scalar_data.shape)
-        # print('pft_1d_data:', pft_1d_data.shape)
-        # print('y_pft_1d_data:', y_pft_1d_data.shape)
-        # print('variables_2d_soil:', variables_2d_soil.shape)
-        # print('y_soil_2d:', y_soil_2d.shape)
-        # print('pft_param_data:', pft_param_data.shape)
-        # if water_tensor is not None:
-        #     print('water_tensor:', water_tensor.shape)
-        # if y_water_tensor is not None:
-        #     print('y_water_tensor:', y_water_tensor.shape)
-        # print('--- END DEBUG ---')
+
 
         # Assert lists are not empty
-        assert len(self.data_config.variables_1d_pft) > 0, 'variables_1d_pft list is empty!'
-        assert pft_1d_data.shape[1] == len(self.data_config.variables_1d_pft), 'Mismatch in 1D PFT feature count!'
+        assert len(self.data_config.x_list_columns_1d) > 0, 'x_list_columns_1d list is empty!'
+        assert pft_1d_data.shape[1] == len(self.data_config.x_list_columns_1d), 'Mismatch in 1D PFT feature count!'
         assert scalar_data.shape[1] == len(self.data_config.x_list_scalar_columns), 'Mismatch in scalar feature count!'
         assert variables_2d_soil.shape[1] == len(self.data_config.x_list_columns_2d), 'Mismatch in 2D soil feature count!'
         assert pft_param_data.shape[1] == len(self.data_config.pft_param_columns), 'Mismatch in PFT param feature count!'
@@ -629,10 +558,9 @@ class DataLoader:
                 if col_data.size == 0:
                     logger.error(f"Time series column {col} has empty data!")
                     col_data = np.zeros((len(self.df), self.data_config.time_series_length), dtype=np.float32)
-                elif np.isnan(col_data).any():
-                    logger.warning(f"Time series column {col} contains NaN values, filling with 0")
+                else:
                     col_data = np.nan_to_num(col_data, nan=0.0)
-                elif np.isinf(col_data).any():
+                if np.isinf(col_data).any():
                     logger.warning(f"Time series column {col} contains infinite values, filling with 0")
                     col_data = np.nan_to_num(col_data, nan=0.0, posinf=0.0, neginf=0.0)
             time_series_list.append(col_data)
@@ -923,7 +851,7 @@ class DataLoader:
             'time_series_columns': self.data_config.time_series_columns,
             'static_columns': self.data_config.static_columns,
             'pft_param_columns': self.data_config.pft_param_columns,
-            'variables_1d_pft': self.data_config.variables_1d_pft,  # Canonical 1D PFT variable list
+            'variables_1d_pft': self.data_config.x_list_columns_1d,  # Canonical 1D PFT variable list
             'y_list_columns_1d': self.data_config.y_list_columns_1d,
             'x_list_scalar_columns': self.data_config.x_list_scalar_columns,
             'y_list_scalar_columns': self.data_config.y_list_scalar_columns,

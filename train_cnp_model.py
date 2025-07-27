@@ -32,7 +32,7 @@ from datetime import datetime
 # Add the project root to the Python path
 sys.path.append(str(Path(__file__).parent))
 
-from config.training_config import get_cnp_model_config, get_cnp_model_config_with_water
+from config.training_config import get_cnp_model_config
 from data.data_loader import DataLoader
 from models.cnp_combined_model import CNPCombinedModel
 from training.trainer import ModelTrainer

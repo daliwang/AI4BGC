@@ -93,12 +93,7 @@ class CNPCombinedModel(nn.Module):
         
         logger.info(f"CNP Model initialized with {self._count_parameters()} parameters")
         logger.info(f"Water variables included: {include_water}")
-        # Debug: Print encoder info and projection layer shape
-        # print("[DEBUG] Active encoders:", self.active_encoders)
-        # print("[DEBUG] Active encoder output sizes:", self.active_encoder_output_sizes)
-        # print("[DEBUG] Total concatenated feature size:", self.concatenated_feature_size)
-        # print("[DEBUG] feature_projection in_features:", self.feature_projection.in_features)
-        # print("[DEBUG] feature_projection out_features:", self.feature_projection.out_features)
+
 
     def _calculate_input_dimensions(self):
         """Calculate input dimensions based on data info."""
@@ -413,7 +408,6 @@ class CNPCombinedModel(nn.Module):
                     pft_param_flat = pft_param_data.view(pft_param_data.size(0), -1)
                     pft_param_features = self.fc_pft_param(pft_param_flat)
                     features.append(pft_param_features)
-                    logger.info(f"Feature group: pft_param, shape: {pft_param_features.shape}")
             elif encoder_name == 'scalar':
                 if self.fc_scalar is not None:
                     scalar_features = self.fc_scalar(scalar_data)
@@ -488,7 +482,6 @@ class CNPCombinedModel(nn.Module):
             pft_param_features = self.fc_pft_param(pft_param_flat)
             # print("NaNs in pft_param_features:", torch.isnan(pft_param_features).sum().item(), "shape:", pft_param_features.shape)
             features.append(pft_param_features)
-            logger.info(f"Feature group: pft_param, shape: {pft_param_features.shape}")
         # Scalar encoder
         if self.fc_scalar is not None:
             scalar_features = self.fc_scalar(scalar)

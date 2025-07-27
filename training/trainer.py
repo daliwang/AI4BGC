@@ -297,7 +297,7 @@ class ModelTrainer:
             train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
-            pin_memory=self.config.pin_memory,
+            pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers,
             prefetch_factor=(2 if self.config.num_workers > 0 else None),
             persistent_workers=False
@@ -478,9 +478,9 @@ class ModelTrainer:
             val_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
-            pin_memory=self.config.pin_memory,
+            pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers,
-            prefetch_factor=self.config.prefetch_factor,
+            prefetch_factor=(self.config.prefetch_factor if self.config.num_workers > 0 else None),
             persistent_workers=self.config.persistent_workers
         )
         
@@ -829,7 +829,7 @@ class ModelTrainer:
             eval_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
-            pin_memory=self.config.pin_memory,
+            pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers
         )
         all_predictions = {
@@ -938,8 +938,7 @@ class ModelTrainer:
     
     def _save_predictions(self, predictions: Dict[str, np.ndarray], predictions_dir: Path):
         """Save predictions with inverse transformation."""
-        # Debug logging to understand tensor shapes
-        logger.info("Debug: Prediction tensor shapes:")
+
         for key, tensor in predictions.items():
             if hasattr(tensor, 'shape'):
                 logger.info(f"  {key}: {tensor.shape}")
