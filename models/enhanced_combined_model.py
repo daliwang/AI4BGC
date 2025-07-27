@@ -57,6 +57,7 @@ class EnhancedCombinedModel(nn.Module):
         self._build_temperature_group_encoder()
         self._build_1d_cnp_encoder()
         self._build_2d_cnp_encoder()
+        self._build_pft_param_encoder()
         self._build_enhanced_feature_fusion()
         self._build_enhanced_output_heads()
         
@@ -85,6 +86,9 @@ class EnhancedCombinedModel(nn.Module):
         # Enhanced 2D CNP input size
         self.list_2d_cnp_input_channels = len(self.data_info['x_list_columns_2d'])
         self.list_2d_cnp_input_size = self.list_2d_cnp_input_channels * self.model_config.matrix_rows * self.model_config.matrix_cols
+
+        # PFT param group input size
+        self.pft_param_input_size = len(self.data_info.get('pft_param_columns', [])) * self.model_config.vector_length
         
         logger.info(f"Reorganized input dimensions:")
         logger.info(f"  - Time Series: {self.time_series_input_size}")
@@ -93,6 +97,7 @@ class EnhancedCombinedModel(nn.Module):
         logger.info(f"  - Temperature Group: {self.temperature_group_input_size}")
         logger.info(f"  - 1D CNP: {self.list_1d_cnp_input_size}")
         logger.info(f"  - 2D CNP: {self.list_2d_cnp_input_size} (channels: {self.list_2d_cnp_input_channels})")
+        logger.info(f"  - PFT Param: {self.pft_param_input_size}")
         
         # Log the reorganized data structure
         logger.info(f"Time series columns: {self.data_info['time_series_columns']}")
@@ -101,6 +106,7 @@ class EnhancedCombinedModel(nn.Module):
         logger.info(f"Temperature group columns: {self.data_info['temperature_group_columns']}")
         logger.info(f"1D CNP columns: {self.data_info['x_list_columns_1d']}")
         logger.info(f"2D CNP columns: {self.data_info['x_list_columns_2d']}")
+        logger.info(f"PFT Param columns: {self.data_info.get('pft_param_columns', [])}")
     
     def _build_time_series_encoder(self):
         """Build time series encoder (unchanged from original)."""
@@ -285,6 +291,22 @@ class EnhancedCombinedModel(nn.Module):
         
         return self.model_config.conv_channels[-1] * h * w
     
+    def _build_pft_param_encoder(self):
+        """Build encoder for PFT param group."""
+        if self.pft_param_input_size > 0:
+            self.pft_param_encoder = nn.Sequential(
+                nn.Linear(self.pft_param_input_size, 256),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(256, 128),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(128, 64)
+            )
+        else:
+            self.pft_param_encoder = None
+            logger.warning("No PFT param features found.")
+    
     def _build_enhanced_feature_fusion(self):
         """Build enhanced feature fusion with hierarchical attention for all 6 groups."""
         # Calculate total feature size from all 6 groups
@@ -373,7 +395,7 @@ class EnhancedCombinedModel(nn.Module):
     
     def forward(self, time_series_data: torch.Tensor, static_surface_data: torch.Tensor, 
                 water_data: torch.Tensor, temperature_data: torch.Tensor,
-                list_1d_cnp_data: torch.Tensor, list_2d_cnp_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                list_1d_cnp_data: torch.Tensor, list_2d_cnp_data: torch.Tensor, pft_param_data: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass through the enhanced reorganized model.
         
@@ -432,10 +454,18 @@ class EnhancedCombinedModel(nn.Module):
         # 6. 2D CNP Processing
         list_2d_cnp_out = self.conv2d_cnp(list_2d_cnp_data)
         
-        # 7. Enhanced Feature Fusion for all 6 groups
+        # 7. PFT Param Group Processing
+        if self.pft_param_encoder is not None and pft_param_data is not None:
+            batch_size = pft_param_data.size(0)
+            pft_param_flat = pft_param_data.view(batch_size, -1)
+            pft_param_out = self.pft_param_encoder(pft_param_flat)
+        else:
+            pft_param_out = torch.zeros(batch_size, 64, device=time_series_data.device)
+        
+        # 8. Enhanced Feature Fusion for all 7 groups
         combined_features = torch.cat([
             time_series_out, static_surface_out, water_out, 
-            temperature_out, list_1d_cnp_out, list_2d_cnp_out
+            temperature_out, list_1d_cnp_out, list_2d_cnp_out, pft_param_out
         ], dim=1)
         projected_features = self.feature_projection(combined_features)
         
@@ -444,7 +474,7 @@ class EnhancedCombinedModel(nn.Module):
         fused_features = self.feature_fusion(token_features)
         fused_features = fused_features.view(batch_size, -1)
         
-        # 8. Enhanced Output Heads
+        # 9. Enhanced Output Heads
         scalar_output = self.scalar_head(fused_features)
         vector_output = self.vector_head(fused_features).view(
             batch_size, self.model_config.vector_output_size, self.model_config.vector_length
