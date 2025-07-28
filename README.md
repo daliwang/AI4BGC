@@ -1,4 +1,4 @@
-# AI4BGC: Artificial Intelligence for Biogeochemical Cycles
+# AI4BGC: Artificial Intelligence for Biogeochemical Cycle Simulation
 
 Welcome to the **AI4BGC** pre-release! This repository provides a modern, flexible, and high-performance deep learning framework for modeling terrestrial biogeochemical cycles using neural networks.
 
@@ -87,6 +87,44 @@ AI4BGC_pre_release/
 - See `README_models.md` for a detailed comparison of the default and CNP models.
 - All configuration options are documented in `config/training_config.py`.
 - Example usage and outputs are provided in the `examples/` directory (if present).
+
+---
+
+## 🧪 Example Mini Dataset (Quick Testing)
+
+A minimal example dataset is available for fast testing and development:
+
+- **Location:** `data/example_dataset/`
+- **Files:** `mini_data_1.pkl`, `mini_data_2.pkl`, `mini_data_3.pkl`
+- **Contents:** Only the variables used in the default model (see below)
+
+### Variables Included
+- **Time series:** `FLDS`, `PSRF`, `FSDS`, `QBOT`, `PRECTmms`, `TBOT`
+- **Static:** `Latitude`, `Longitude`
+- **PFT param:** `pft_leafcn`
+- **1D PFT:** `deadcrootc`, `Y_deadcrootc`
+- **Scalar:** `GPP`, `NPP`, `Y_GPP`, `Y_NPP`
+- **2D:** `soil1c_vr`, `Y_soil1c_vr`
+
+### How to Generate the Example Dataset
+
+If you need to regenerate the mini dataset (for example, after updating the source data):
+
+```bash
+cd data
+python create_example_dataset.py
+```
+This will create (or overwrite) the files in `data/example_dataset/`.
+
+### Using the Example Dataset
+
+The default configuration is set up to use the mini dataset for quick testing. Simply run:
+
+```bash
+python train_model.py
+```
+
+This will train the model using only the small example files, which is ideal for development, debugging, or CI tests.
 
 ---
 
