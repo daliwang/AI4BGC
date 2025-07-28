@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import logging
+import os
 
 
 @dataclass
@@ -313,8 +314,8 @@ class TrainingConfigManager:
 def get_default_config() -> TrainingConfigManager:
     config = TrainingConfigManager()
     # Minimal/simple config for quick start
-    config.data_config.data_paths = ["/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trendy_1_data_CNP"]
-    config.data_config.file_pattern = "dataset_part_*.pkl"
+    config.data_config.data_paths = [os.path.join(os.path.dirname(__file__), '../data/example_dataset')]
+    config.data_config.file_pattern = "mini_data_*.pkl"
     config.data_config.max_files = 3
     config.data_config.train_split = 0.8
     config.data_config.time_series_columns = ['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT']
