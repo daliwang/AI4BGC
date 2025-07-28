@@ -37,6 +37,7 @@ python train_cnp_model.py
 - Trains the full CNP model on all available data and variables
 - For research, publications, and production use
 - Requires more memory and time
+- Support --help option
 
 ---
 
