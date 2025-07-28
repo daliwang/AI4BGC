@@ -9,7 +9,8 @@ Welcome to the **AI4BGC** pre-release! This repository provides a modern, flexib
 ### 1. **Clone the Repository**
 ```bash
 git clone <your-repo-url>
-cd AI4BGC_pre_release
+cd AI4BGC
+git checkout pre_release_branch
 ```
 
 ### 2. **Install Dependencies**
@@ -32,6 +33,7 @@ python train_model.py
 ```bash
 python train_cnp_model.py
 ```
+- Requires dedicated CNP datasets (not included in this release) 
 - Trains the full CNP model on all available data and variables
 - For research, publications, and production use
 - Requires more memory and time
@@ -103,11 +105,6 @@ A minimal example dataset is available for fast testing and development:
 
 ## 🤝 Contributing
 We welcome feedback, bug reports, and contributions! Please open issues or pull requests as needed.
-
----
-
-## 📝 License
-This pre-release is provided for research and testing purposes. Please contact the authors for licensing details if you wish to use this code for commercial or large-scale research projects.
 
 ---
 
