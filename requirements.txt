@@ -7,14 +7,14 @@ torchaudio>=2.7.0
 # Data Processing and Analysis
 pandas>=2.3.0
 numpy>=2.3.0
-scikit-learn>=1.7.0
+scikit-learn>=1.5.0
 
 # Visualization
-matplotlib>=3.10.0
+matplotlib>=3.8.0
 seaborn>=0.13.0
 
 # Scientific Computing (optional but recommended for climate data)
-scipy>=1.16.0
+scipy>=1.11.0
 xarray>=2025.6.0
 netCDF4>=1.7.0
 
