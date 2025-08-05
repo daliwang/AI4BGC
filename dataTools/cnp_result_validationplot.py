@@ -13,6 +13,8 @@ def plot_gt_vs_pred(gt, pred, title, save_path):
     plt.ylabel('Prediction')
     plt.title(title)
     plt.tight_layout()
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path)
     plt.close()
 
@@ -47,11 +49,11 @@ def analyze_pair(gt_path, pred_path, label, out_dir, per_column=False):
         plot_gt_vs_pred(gt_flat, pred_flat, f"{label} GT vs Pred", os.path.join(out_dir, f"{label}_gt_vs_pred.png"))
         return {'rmse': rmse, 'mae': mae, 'r2': r2}
 
-def analyze_1d(gt_path, pred_path, label, out_dir):
+def analyze_1d(gt_path, pred_path, label, out_dir, results_dir):
     gt = pd.read_csv(gt_path)
     pred = pd.read_csv(pred_path)
     # Read variable names from cnp_config.json
-    config_path = os.path.join(out_dir, 'cnp_config.json')
+    config_path = os.path.join(results_dir, 'cnp_config.json')
     if os.path.exists(config_path):
         with open(config_path, 'r') as f:
             config = json.load(f)
@@ -60,7 +62,7 @@ def analyze_1d(gt_path, pred_path, label, out_dir):
             print('[ERROR] Could not find variables_1d_pft in cnp_config.json!')
             return
     else:
-        print(f'[ERROR] cnp_config.json not found in {out_dir}!')
+        print(f'[ERROR] cnp_config.json not found in {results_dir}!')
         return
     num_vars = len(variable_names)
     num_pfts = 16  # pft0 is dropped in training
@@ -97,6 +99,8 @@ def plot_train_val_accuracy(loss_csv, out_dir):
         plt.legend()
         plt.title('Train/Validation Loss')
         plt.tight_layout()
+        # Ensure the directory exists
+        os.makedirs(out_dir, exist_ok=True)
         plt.savefig(os.path.join(out_dir, 'train_val_loss.png'))
         plt.close()
     else:
@@ -111,6 +115,9 @@ if __name__ == '__main__':
     parser.set_defaults(plot_loss=True)
     args = parser.parse_args()
     def main_with_flag(results_dir, plot_loss):
+        # Create plots subdirectory
+        plots_dir = os.path.join(results_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
         pairs = [
             ('ground_truth_1d.csv', 'predictions_1d.csv', '1D'),
             #('ground_truth_2d.csv', 'predictions_2d.csv', '2D'),  # 2D analysis disabled
@@ -122,22 +129,22 @@ if __name__ == '__main__':
             pred_path = os.path.join(results_dir, 'cnp_predictions', pred_file)
             if os.path.exists(gt_path) and os.path.exists(pred_path):
                 if label == 'Scalar':
-                    analyze_pair(gt_path, pred_path, label, results_dir, per_column=True)
+                    analyze_pair(gt_path, pred_path, label, plots_dir, per_column=True)
                 elif label == '1D':
-                    analyze_1d(gt_path, pred_path, label, results_dir)
+                    analyze_1d(gt_path, pred_path, label, plots_dir, results_dir)
                 else:
-                    metrics[label] = analyze_pair(gt_path, pred_path, label, results_dir)
+                    metrics[label] = analyze_pair(gt_path, pred_path, label, plots_dir)
             else:
                 print(f"Missing files for {label}: {gt_path}, {pred_path}")
         # Plot train/val accuracy if available and requested
         if plot_loss:
             loss_csv = os.path.join(results_dir, 'cnp_training_losses.csv')
             if os.path.exists(loss_csv):
-                plot_train_val_accuracy(loss_csv, results_dir)
+                plot_train_val_accuracy(loss_csv, plots_dir)
             else:
                 print("Loss CSV not found for train/val accuracy plot.")
         # Print test metrics if available
-        test_metrics_path = os.path.join(results_dir, 'test_metrics.csv')
+        test_metrics_path = os.path.join(results_dir, 'cnp_predictions','test_metrics.csv')
         if os.path.exists(test_metrics_path):
             print("\nTest Metrics:")
             print(pd.read_csv(test_metrics_path))

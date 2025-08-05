@@ -53,11 +53,12 @@ def setup_logging(log_file: str, level: str = 'INFO') -> None:
 def main():
     """Main training function for CNP model."""
     parser = argparse.ArgumentParser(description='CNP Model Training')
-    parser.add_argument(
-        '--with-water',
-        action='store_true',
-        help='Include water variables in both input and output (default: no water)'
-    )
+    # turn off water for now
+    # parser.add_argument(
+    #     '--with-water',
+    #     action='store_true',
+    #     help='Include water variables in both input and output (default: no water)'
+    # )
     parser.add_argument(
         '--log-level', 
         default='INFO',
@@ -98,6 +99,12 @@ def main():
         action='store_true',
         help='Include Trend_05_data_CNP dataset'
     )
+    parser.add_argument(
+        '--variable-list',
+        type=str,
+        default=None,
+        help='Path to variable list file (e.g., CNP_IO_list_general.txt) for dynamic configuration'
+    )
     
     args = parser.parse_args()
     
@@ -117,24 +124,30 @@ def main():
         args.use_trendy05 = False
 
     try:
-        include_water = args.with_water
+        # turn off water for now
+        include_water = False
+        # include_water = args.with_water
         logger.info(f"Water variables included: {include_water}")
         
         # Get configuration
-        if include_water:
-            config = get_cnp_model_config(
-                include_water=True,
+        if args.variable_list is not None:
+            from config.training_config import get_cnp_combined_config
+            config = get_cnp_combined_config(
                 use_trendy1=args.use_trendy1,
-                use_trendy05=args.use_trendy05
+                use_trendy05=args.use_trendy05,
+                max_files=None,  # You can add a CLI arg for this if needed
+                include_water=include_water,
+                variable_list_path=args.variable_list
             )
-            logger.info("Using CNP configuration with water variables")
+            logger.info(f"Using CNP configuration from variable list file: {args.variable_list}")
         else:
+            from config.training_config import get_cnp_model_config
             config = get_cnp_model_config(
-                include_water=False,
+                include_water=include_water,
                 use_trendy1=args.use_trendy1,
                 use_trendy05=args.use_trendy05
             )
-            logger.info("Using CNP configuration without water variables")
+            logger.info(f"Using default CNP configuration{' with water' if include_water else ' without water'}")
         # Set train/validation split to 70/30
         config.update_data_config(train_split=0.7)
         # Ensure GPU and all files
@@ -154,18 +167,18 @@ def main():
         )
         
         # --- FORCE 2D COLUMN ALIGNMENT FOR SAFETY ---
-        aligned_2d_vars = [
-            'cwdc_vr', 'cwdn_vr', 'secondp_vr', 'cwdp_vr',
-            'litr1c_vr', 'litr2c_vr', 'litr3c_vr',
-            'litr1n_vr', 'litr2n_vr', 'litr3n_vr',
-            'litr1p_vr', 'litr2p_vr', 'litr3p_vr',
-            'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
-            'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
-            'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
-            'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
-        ]
-        config.data_config.x_list_columns_2d = aligned_2d_vars
-        config.data_config.y_list_columns_2d = ['Y_' + v for v in aligned_2d_vars]
+        #aligned_2d_vars = [
+        #    'cwdc_vr', 'cwdn_vr', 'secondp_vr', 'cwdp_vr',
+        #    'litr1c_vr', 'litr2c_vr', 'litr3c_vr',
+        #    'litr1n_vr', 'litr2n_vr', 'litr3n_vr',
+        #    'litr1p_vr', 'litr2p_vr', 'litr3p_vr',
+        #    'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
+        #    'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
+        #    'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
+        #    'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
+        #]
+        #config.data_config.x_list_columns_2d = aligned_2d_vars
+        #config.data_config.y_list_columns_2d = ['Y_' + v for v in aligned_2d_vars]
         # print('x_list_columns_2d (forced):', config.data_config.x_list_columns_2d)
         # print('y_list_columns_2d (forced):', config.data_config.y_list_columns_2d)
         assert config.data_config.y_list_columns_2d == ['Y_' + v for v in config.data_config.x_list_columns_2d], \
