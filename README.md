@@ -14,10 +14,10 @@ git checkout pre_release_branch
 ```
 
 ### 2. **Install Dependencies**
-We recommend using a conda environment:
+We recommend using a venv environment:
 ```bash
-conda create -n ai4bgc_env python=3.11
-conda activate ai4bgc_env
+python3 -m venv <path-to-location>/ai4bgc_env 
+source <path-to-location/ai4bgc_env/bin/activate
 pip install -r requirements.txt
 ```
 
