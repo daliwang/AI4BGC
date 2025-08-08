@@ -196,8 +196,8 @@ class TrainingConfig:
     memory_efficient_attention: bool = True  # Use memory efficient attention if available
     
     # GPU Monitoring
-    log_gpu_memory: bool = True  # Log GPU memory usage
-    log_gpu_utilization: bool = True  # Log GPU utilization
+    log_gpu_memory: bool = False  # Log GPU memory usage
+    log_gpu_utilization: bool = False  # Log GPU utilization
     gpu_monitor_interval: int = 100  # Log GPU stats every N batches
     
     # Logging and saving
@@ -456,10 +456,10 @@ def get_cnp_combined_config(
     data_paths = []
     file_patterns = []
     if use_trendy1:
-        data_paths.append("/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trendy_1_data_CNP")
-        file_patterns.append("dataset_part_*.pkl")
+        data_paths.append("/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_1_data_CNP")
+        file_patterns.append("1_training_data_batch_*.pkl")
     if use_trendy05:
-        data_paths.append("/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trendy_05_data_CNP")
+        data_paths.append("/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_05_data_CNP")
         file_patterns.append("1_training_data_batch_*.pkl")
     file_pattern = file_patterns[0] if len(file_patterns) == 1 else file_patterns
 
@@ -479,17 +479,18 @@ def get_cnp_combined_config(
     # Defaults
     default_time_series = ['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT']
     default_surface = [
-        'Latitude', 'Longitude', 'AREA', 'landfrac', 'LANDFRAC_PFT',
+        'Latitude', 'Longitude', 'AREA', 'landfrac', 'LANDFRAC_PFT', 'PCT_NATVEG',
         'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
+        'SOIL_COLOR', 'SOIL_ORDER',
         'PCT_NAT_PFT_0', 'PCT_NAT_PFT_1', 'PCT_NAT_PFT_2', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_4', 
         'PCT_NAT_PFT_5', 'PCT_NAT_PFT_6', 'PCT_NAT_PFT_7', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 
         'PCT_NAT_PFT_10', 'PCT_NAT_PFT_11', 'PCT_NAT_PFT_12', 'PCT_NAT_PFT_13', 'PCT_NAT_PFT_14', 
-        'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_NATVEG',
+        'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16',
         'PCT_CLAY_0', 'PCT_CLAY_1', 'PCT_CLAY_2', 'PCT_CLAY_3', 'PCT_CLAY_4', 
         'PCT_CLAY_5', 'PCT_CLAY_6', 'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9',
         'PCT_SAND_0', 'PCT_SAND_1', 'PCT_SAND_2', 'PCT_SAND_3', 'PCT_SAND_4', 
-        'PCT_SAND_5', 'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8', 'PCT_SAND_9',
-        'SOIL_COLOR', 'SOIL_ORDER'
+        'PCT_SAND_5', 'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8', 'PCT_SAND_9'
+
     ]
 
     default_pft_parameters = [
@@ -509,8 +510,8 @@ def get_cnp_combined_config(
         'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
         'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
         'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
-        'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr',
-        'secondp_vr'
+        'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
+    #        'secondp_vr' # this is not in the list, but it is in the data  
     ]
 
     # If a variable list file is provided, parse it
@@ -586,10 +587,10 @@ def get_cnp_combined_config(
         conv_padding=1,
         
         # Transformer parameters
-        num_tokens=4,  # Reduced from 8
-        token_dim=64,  # Reduced from 128
-        transformer_layers=2,  # Reduced from 4
-        transformer_heads=4,  # Reduced from 8
+        num_tokens=8,  # Reduced from 8
+        token_dim=128,  # Reduced from 128
+        transformer_layers=4,  # Reduced from 4
+        transformer_heads=8,  # Reduced from 8
         
         # Output dimensions - properly organized according to CNP_IO_list1.txt
         scalar_output_size=4,  # Y_GPP, Y_NPP, Y_AR, Y_HR (5 scalar variables)
@@ -605,9 +606,9 @@ def get_cnp_combined_config(
     
     # Training configuration
     config.update_training_config(
-        num_epochs=5,  # Reduced for testing with single file
-        batch_size=8,  # Further reduced batch size for GPU memory
-        learning_rate=0.001,
+        num_epochs=10,  # Reduced for testing with single file
+        batch_size=128,  # Further reduced batch size for GPU memory
+        learning_rate=0.0001,
         
         # Loss weights for different output types
         scalar_loss_weight=1.0,
@@ -622,7 +623,7 @@ def get_cnp_combined_config(
         scheduler_type='cosine',
         
         # Early stopping
-        use_early_stopping=True,
+        use_early_stopping=False,
         patience=3,  # Reduced for testing
         min_delta=0.001,
         

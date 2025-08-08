@@ -16,6 +16,8 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
 from sklearn.utils import shuffle
 from sklearn.metrics import mean_squared_error
 import warnings
+from pathlib import Path
+import pickle
 
 from config.training_config import DataConfig, PreprocessingConfig
 
@@ -79,42 +81,37 @@ class DataLoader:
                 logger.info(f"  {col}: {count}")
 
     def load_data(self) -> pd.DataFrame:
-        """
-        Load data from all specified paths.
-        
-        Returns:
-            Combined DataFrame
-        """
-        logger.info("Loading data from multiple paths...")
-        
-        input_files = []
-        for path in self.data_config.data_paths:
-            pattern = os.path.join(path, self.data_config.file_pattern)
-            files = sorted(glob.glob(pattern))
-            logger.info(f"Found {len(files)} files in {path}")
-            
-            # Limit number of files per path if specified
-            if self.data_config.max_files is not None:
-                files = files[:self.data_config.max_files]
-                logger.info(f"Limited to {len(files)} files from {path}")
-            
-            input_files.extend(files)
-        
-        if not input_files:
-            raise RuntimeError("No data files found in specified paths")
-        
-        logger.info(f"Total files to load: {len(input_files)}")
-        
-        # Load all files sequentially
+        """Load data from configured paths and patterns."""
         df_list = []
-        for file in input_files:
+        logger.info("Loading data from multiple paths...")
+        for path in self.data_config.data_paths:
+            # Resolve files matching pattern
+            files = list(Path(path).glob(self.data_config.file_pattern))
+            # Deterministic ordering for test runs
+            if getattr(self.data_config, 'sort_file_list', True):
+                files = sorted(files, key=lambda p: p.name)
+            # Optional cap on number of files
+            num_files = len(files)
+            logger.info(f"Found {num_files} files in {path}")
+            # Log a short hash of the ordered file list for reproducibility checks
             try:
-    
-                batch_df = pd.read_pickle(file)
-                df_list.append(batch_df)
-            except Exception as e:
-                logger.error(f"Error loading {file}: {e}")
-                continue
+                concat_names = ''.join([p.name for p in files])
+                digest = hashlib.md5(concat_names.encode('utf-8')).hexdigest()[:8]
+                logger.info(f"File list order hash: {digest}")
+            except Exception:
+                pass
+            # Load each file
+            for file_path in files:
+                try:
+                    with open(file_path, 'rb') as f:
+                        df = pickle.load(f)
+                        if isinstance(df, pd.DataFrame):
+                            df_list.append(df)
+                        else:
+                            logger.warning(f"File {file_path} did not contain a DataFrame. Skipping.")
+                except Exception as e:
+                    logger.error(f"Failed to load {file_path}: {e}")
+                    continue
         
         if not df_list:
             raise RuntimeError("No data loaded successfully")

@@ -156,15 +156,17 @@ def main():
         # Turn off GPU monitoring and debug logging
         config.update_training_config(log_gpu_memory=False, log_gpu_utilization=False)
         # Override training parameters if specified
+        effective_lr = args.learning_rate if args.learning_rate is not None else config.training_config.learning_rate
         config.update_training_config(
             num_epochs=args.epochs,  
             batch_size=args.batch_size,
-            learning_rate=args.learning_rate * 0.1 if args.learning_rate else 0.0001,
+            learning_rate=effective_lr,
             model_save_path=str(output_dir / "cnp_model.pt"),
             losses_save_path=str(output_dir / "cnp_training_losses.csv"),
             predictions_dir=str(output_dir / "cnp_predictions"),
             use_early_stopping=False
         )
+        logger.info(f"Effective learning rate for this run: {effective_lr}")
         
         # --- FORCE 2D COLUMN ALIGNMENT FOR SAFETY ---
         #aligned_2d_vars = [
@@ -196,6 +198,38 @@ def main():
         data_loader.load_data()
         data_loader.preprocess_data()
         data_info = data_loader.get_data_info()
+        # One-time config dump: resolved variables and training params
+        resolved = {
+            'time_series_columns': data_info.get('time_series_columns', []),
+            'static_columns': data_info.get('static_columns', []),
+            'pft_param_columns': data_info.get('pft_param_columns', []),
+            'x_list_scalar_columns': data_info.get('x_list_scalar_columns', []),
+            'y_list_scalar_columns': data_info.get('y_list_scalar_columns', []),
+            'variables_1d_pft': data_info.get('variables_1d_pft', []),
+            'y_list_columns_1d': data_info.get('y_list_columns_1d', []),
+            'x_list_columns_2d': data_info.get('x_list_columns_2d', []),
+            'y_list_columns_2d': data_info.get('y_list_columns_2d', []),
+            'training': {
+                'num_epochs': config.training_config.num_epochs,
+                'batch_size': config.training_config.batch_size,
+                'learning_rate': config.training_config.learning_rate,
+                'optimizer_type': config.training_config.optimizer_type,
+                'use_scheduler': config.training_config.use_scheduler,
+                'scheduler_type': config.training_config.scheduler_type,
+                'device': config.training_config.device,
+                'use_mixed_precision': config.training_config.use_mixed_precision,
+                'use_amp': config.training_config.use_amp,
+                'use_grad_scaler': config.training_config.use_grad_scaler,
+                'random_seed': getattr(config.training_config, 'random_seed', None),
+                'deterministic': getattr(config.training_config, 'deterministic', None),
+                'train_split': getattr(config.data_config, 'train_split', None),
+                'shuffle_seed': getattr(config.training_config, 'shuffle_seed', None),
+                'max_files': getattr(config.data_config, 'max_files', None)
+            }
+        }
+        logger.info(f"Resolved variable lists and params: {json.dumps(resolved, indent=2)}")
+        with open(output_dir / 'resolved_config.json', 'w') as f:
+            json.dump(resolved, f, indent=2)
         
         # Normalize data
         logger.info("Normalizing data...")
