@@ -94,6 +94,11 @@ class ModelTrainer:
             'water', 'y_water'
         ]
 
+        # DataLoader generator for deterministic shuffling
+        self._torch_generator = torch.Generator(device='cpu')
+        if hasattr(self.config, 'random_seed'):
+            self._torch_generator.manual_seed(self.config.random_seed)
+        
         # --- DEBUG: Force small batch size and minimal DataLoader workers for OOM debugging ---
         # print the shape of the tensors in the train and test data
         # print(f"[DEBUG] train_data['time_series'].shape: {self.train_data['time_series'].shape}")
@@ -306,6 +311,7 @@ class ModelTrainer:
             train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
+            generator=self._torch_generator,
             pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers,
             prefetch_factor=(2 if self.config.num_workers > 0 else None),
@@ -487,6 +493,7 @@ class ModelTrainer:
             val_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
+            generator=self._torch_generator,
             pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers,
             prefetch_factor=(self.config.prefetch_factor if self.config.num_workers > 0 else None),
@@ -838,6 +845,7 @@ class ModelTrainer:
             eval_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
+            generator=self._torch_generator,
             pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers
         )
@@ -1032,6 +1040,18 @@ class ModelTrainer:
         metrics_df = pd.DataFrame([metrics])
         metrics_df.to_csv(predictions_dir / "test_metrics.csv", index=False)
         logger.info(f"Metrics saved to {predictions_dir / 'test_metrics.csv'}")
+
+        # Save inverse-transformed static features for test set to enable geospatial mapping
+        try:
+            if 'static' in self.test_data and 'static' in self.scalers and 'static_columns' in self.data_info:
+                static_np = self.test_data['static'].cpu().numpy()
+                static_inv = self.scalers['static'].inverse_transform(static_np)
+                static_cols = self.data_info['static_columns']
+                df_static = pd.DataFrame(static_inv, columns=static_cols)
+                df_static.to_csv(predictions_dir / 'test_static_inverse.csv', index=False)
+                logger.info(f"Inverse-transformed test static features saved to {predictions_dir / 'test_static_inverse.csv'}")
+        except Exception as e:
+            logger.warning(f"Failed to save inverse-transformed static features: {e}")
     
     def _save_predictions(self, predictions: Dict[str, np.ndarray], predictions_dir: Path):
         """Save predictions with inverse transformation."""

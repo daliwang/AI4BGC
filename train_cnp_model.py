@@ -28,6 +28,8 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime
+import random
+import numpy as np
 
 # Add the project root to the Python path
 sys.path.append(str(Path(__file__).parent))
@@ -48,6 +50,34 @@ def setup_logging(log_file: str, level: str = 'INFO') -> None:
             logging.FileHandler(log_file)
         ]
     )
+
+
+def set_global_determinism(seed: int) -> None:
+    """Enable strict determinism across Python, NumPy, and PyTorch."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    # For deterministic cuBLAS GEMM; no-op on CPU
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        # Disable TF32 for exact reproducibility on Ampere/Hopper
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+        except Exception:
+            pass
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    try:
+        # Highest precision for matmul to avoid TF32 paths (PyTorch 2+)
+        if hasattr(torch, 'set_float32_matmul_precision'):
+            torch.set_float32_matmul_precision('highest')
+        torch.use_deterministic_algorithms(True)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Could not enable full deterministic algorithms: {e}")
 
 
 def main():
@@ -87,6 +117,18 @@ def main():
         type=float,
         default=0.0001,
         help='Learning rate'
+    )
+    # Determinism and reproducibility controls
+    parser.add_argument(
+        '--strict-determinism',
+        action='store_true',
+        help='Enable strict deterministic settings (seed all RNGs, disable TF32, deterministic algorithms)'
+    )
+    parser.add_argument(
+        '--dropout-p',
+        type=float,
+        default=None,
+        help='Override global dropout probability in the model (e.g., 0.0 to disable)'
     )
 
     parser.add_argument(
@@ -167,7 +209,24 @@ def main():
             use_early_stopping=False
         )
         logger.info(f"Effective learning rate for this run: {effective_lr}")
-        
+
+        # Optional strict determinism (opt-in via CLI)
+        if args.strict_determinism:
+            seed = getattr(config.training_config, 'random_seed', 42)
+            set_global_determinism(seed)
+            logger.info(f"Strict determinism enabled with seed={seed}")
+        else:
+            logger.info("Strict determinism disabled (default). Running with standard PyTorch settings.")
+
+        # Optional global dropout override for reproducibility testing
+        if args.dropout_p is not None:
+            try:
+                old_p = getattr(config.model_config, 'dropout_p', None)
+                config.update_model_config(dropout_p=float(args.dropout_p))
+                logger.info(f"Global model dropout overridden: {old_p} -> {config.model_config.dropout_p}")
+            except Exception as e:
+                logger.warning(f"Failed to apply --dropout-p override: {e}")
+
         # --- FORCE 2D COLUMN ALIGNMENT FOR SAFETY ---
         #aligned_2d_vars = [
         #    'cwdc_vr', 'cwdn_vr', 'secondp_vr', 'cwdp_vr',

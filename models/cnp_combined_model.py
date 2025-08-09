@@ -54,6 +54,8 @@ class CNPCombinedModel(nn.Module):
         self.include_water = include_water
         self.use_learnable_loss_weights = use_learnable_loss_weights
         self.token_dim = self.model_config.token_dim  # <-- Fix: set token_dim before feature fusion
+        # Centralized dropout probability (allows disabling for strict determinism)
+        self.dropout_p = getattr(self.model_config, 'dropout_p', 0.1)
         
         # Calculate input dimensions
         self._calculate_input_dimensions()
@@ -139,7 +141,7 @@ class CNPCombinedModel(nn.Module):
             hidden_size=self.model_config.lstm_hidden_size,
             num_layers=2,
             batch_first=True,
-            dropout=0.1
+            dropout=self.dropout_p
         )
     
     def _build_surface_encoder(self):
@@ -148,7 +150,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_surface = nn.Sequential(
                 nn.Linear(self.surface_input_size, self.model_config.static_fc_size),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(self.model_config.static_fc_size, self.model_config.static_fc_size // 2)
             )
         else:
@@ -162,7 +164,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_pft_1d = nn.Sequential(
                 nn.Linear(input_dim, 256),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(256, output_dim)
             )
             self.pft_1d_output_dim = output_dim
@@ -181,7 +183,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_water = nn.Sequential(
                 nn.Linear(self.water_input_size, 32),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(32, 16)
             )
         else:
@@ -193,7 +195,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_scalar = nn.Sequential(
                 nn.Linear(self.scalar_input_size, 32),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(32, 16)
             )
         else:
@@ -218,7 +220,7 @@ class CNPCombinedModel(nn.Module):
                     ),
                     nn.BatchNorm2d(out_channels),
                     nn.ReLU(),
-                    nn.Dropout2d(0.1)
+                    nn.Dropout2d(self.dropout_p)
                 ])
                 if use_pooling and i < len(self.model_config.conv_channels) - 1:
                     layers.append(nn.MaxPool2d(2))
@@ -230,7 +232,7 @@ class CNPCombinedModel(nn.Module):
                 nn.Flatten(),
                 nn.Linear(conv_output_size, 128),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(128, 128)  # Changed from 64 to 128 to match expected output size
             ])
             self.cnn_soil2d = nn.Sequential(*layers)
@@ -332,7 +334,7 @@ class CNPCombinedModel(nn.Module):
                 d_model=self.token_dim, 
                 nhead=self.model_config.transformer_heads, 
                 dim_feedforward=self.token_dim * 4,
-                dropout=0.1,
+                dropout=self.dropout_p,
                 batch_first=True
             ),
             num_layers=self.model_config.transformer_layers
@@ -346,7 +348,7 @@ class CNPCombinedModel(nn.Module):
             self.water_head = nn.Sequential(
                 nn.Linear(self.token_dim, 64),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(64, 6)  # 6 water variables
             )
         else:
@@ -356,7 +358,7 @@ class CNPCombinedModel(nn.Module):
             nn.Linear(self.token_dim, 64),
             nn.BatchNorm1d(64),  # Add BatchNorm
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(self.dropout_p),
             nn.Linear(64, self.model_config.scalar_output_size)  # 6 scalar variables
         )
         # 2D output head (dynamic number of 2D soil variables)
@@ -364,14 +366,14 @@ class CNPCombinedModel(nn.Module):
         self.matrix_head = nn.Sequential(
             nn.Linear(self.token_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(self.dropout_p),
             nn.Linear(128, n_2d_vars * self.model_config.matrix_rows * self.model_config.matrix_cols)
         )
         # 1D PFT output head (14 variables x 16 PFTs)
         self.pft_1d_head = nn.Sequential(
             nn.Linear(self.token_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(self.dropout_p),
             nn.Linear(128, self.pft_1d_input_size * self.model_config.vector_length)  # 14 x 16
         )
     

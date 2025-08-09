@@ -125,6 +125,8 @@ class ModelConfig:
     token_dim: int = 64
     transformer_layers: int = 2
     transformer_heads: int = 4
+    # Global dropout probability (set to 0.0 for bit-for-bit reproducibility)
+    dropout_p: float = 0.1
     
     # Output dimensions
     scalar_output_size: int = 5
@@ -490,7 +492,6 @@ def get_cnp_combined_config(
         'PCT_CLAY_5', 'PCT_CLAY_6', 'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9',
         'PCT_SAND_0', 'PCT_SAND_1', 'PCT_SAND_2', 'PCT_SAND_3', 'PCT_SAND_4', 
         'PCT_SAND_5', 'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8', 'PCT_SAND_9'
-
     ]
 
     default_pft_parameters = [
@@ -500,7 +501,7 @@ def get_cnp_combined_config(
     default_scalar = ['GPP', 'NPP', 'AR', 'HR']
     default_pft_1d = [
         'deadcrootc', 'deadcrootn', 'deadcrootp', 'deadstemc', 'deadstemn', 'deadstemp',
-        'frootc', 'frootc_storage', 'leafc', 'leafc_storage', 'totcolp', 'totlitc', 'totvegc', 'tlai'
+        'frootc', 'frootc_storage', 'leafc', 'leafc_storage', 'totvegc', 'tlai'
     ]
     default_2d_soil = [
         'cwdc_vr', 'cwdn_vr', 'cwdp_vr',
@@ -508,9 +509,10 @@ def get_cnp_combined_config(
         'litr1n_vr', 'litr2n_vr', 'litr3n_vr',
         'litr1p_vr', 'litr2p_vr', 'litr3p_vr',
         'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
-        'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
-        'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
-        'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
+        'soil1c_vr', 'soil1n_vr', 'soil1p_vr', 
+        'soil2c_vr', 'soil2n_vr', 'soil2p_vr', 
+        'soil3c_vr', 'soil3n_vr', 'soil3p_vr', 
+        'soil4c_vr', 'soil4n_vr', 'soil4p_vr'
     #        'secondp_vr' # this is not in the list, but it is in the data  
     ]
 
@@ -598,7 +600,8 @@ def get_cnp_combined_config(
         vector_length=16,
         matrix_output_size=28,  # 2D variables (28)
         matrix_rows=18,  # we predict 18 rows of soil data  (double check this)
-        matrix_cols=10  # First 10 columns
+        matrix_cols=10,  # First 10 columns
+        
         # Temperature output excluded for first experiments
     )
     config.model_config.pft_param_size = len(pft_parameters)  # which is 44
@@ -636,7 +639,7 @@ def get_cnp_combined_config(
         # GPU Memory Optimization
         empty_cache_freq=5,  # Empty GPU cache more frequently
         max_memory_usage=0.7,  # Use less GPU memory (70% instead of 90%)
-        memory_efficient_attention=True,
+        memory_efficient_attention=False,
         
         # DataLoader settings for CPU
         num_workers=0,  # No multiprocessing for CPU
