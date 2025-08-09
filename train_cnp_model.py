@@ -28,6 +28,8 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime
+import random
+import numpy as np
 
 # Add the project root to the Python path
 sys.path.append(str(Path(__file__).parent))
@@ -50,14 +52,43 @@ def setup_logging(log_file: str, level: str = 'INFO') -> None:
     )
 
 
+def set_global_determinism(seed: int) -> None:
+    """Enable strict determinism across Python, NumPy, and PyTorch."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    # For deterministic cuBLAS GEMM; no-op on CPU
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        # Disable TF32 for exact reproducibility on Ampere/Hopper
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+        except Exception:
+            pass
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    try:
+        # Highest precision for matmul to avoid TF32 paths (PyTorch 2+)
+        if hasattr(torch, 'set_float32_matmul_precision'):
+            torch.set_float32_matmul_precision('highest')
+        torch.use_deterministic_algorithms(True)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Could not enable full deterministic algorithms: {e}")
+
+
 def main():
     """Main training function for CNP model."""
     parser = argparse.ArgumentParser(description='CNP Model Training')
-    parser.add_argument(
-        '--with-water',
-        action='store_true',
-        help='Include water variables in both input and output (default: no water)'
-    )
+    # turn off water for now
+    # parser.add_argument(
+    #     '--with-water',
+    #     action='store_true',
+    #     help='Include water variables in both input and output (default: no water)'
+    # )
     parser.add_argument(
         '--log-level', 
         default='INFO',
@@ -87,6 +118,18 @@ def main():
         default=0.0001,
         help='Learning rate'
     )
+    # Determinism and reproducibility controls
+    parser.add_argument(
+        '--strict-determinism',
+        action='store_true',
+        help='Enable strict deterministic settings (seed all RNGs, disable TF32, deterministic algorithms)'
+    )
+    parser.add_argument(
+        '--dropout-p',
+        type=float,
+        default=None,
+        help='Override global dropout probability in the model (e.g., 0.0 to disable)'
+    )
 
     parser.add_argument(
         '--use-trendy1',
@@ -97,6 +140,12 @@ def main():
         '--use-trendy05',
         action='store_true',
         help='Include Trend_05_data_CNP dataset'
+    )
+    parser.add_argument(
+        '--variable-list',
+        type=str,
+        default=None,
+        help='Path to variable list file (e.g., CNP_IO_list_general.txt) for dynamic configuration'
     )
     
     args = parser.parse_args()
@@ -117,24 +166,30 @@ def main():
         args.use_trendy05 = False
 
     try:
-        include_water = args.with_water
+        # turn off water for now
+        include_water = False
+        # include_water = args.with_water
         logger.info(f"Water variables included: {include_water}")
         
         # Get configuration
-        if include_water:
-            config = get_cnp_model_config(
-                include_water=True,
+        if args.variable_list is not None:
+            from config.training_config import get_cnp_combined_config
+            config = get_cnp_combined_config(
                 use_trendy1=args.use_trendy1,
-                use_trendy05=args.use_trendy05
+                use_trendy05=args.use_trendy05,
+                max_files=None,  # You can add a CLI arg for this if needed
+                include_water=include_water,
+                variable_list_path=args.variable_list
             )
-            logger.info("Using CNP configuration with water variables")
+            logger.info(f"Using CNP configuration from variable list file: {args.variable_list}")
         else:
+            from config.training_config import get_cnp_model_config
             config = get_cnp_model_config(
-                include_water=False,
+                include_water=include_water,
                 use_trendy1=args.use_trendy1,
                 use_trendy05=args.use_trendy05
             )
-            logger.info("Using CNP configuration without water variables")
+            logger.info(f"Using default CNP configuration{' with water' if include_water else ' without water'}")
         # Set train/validation split to 70/30
         config.update_data_config(train_split=0.7)
         # Ensure GPU and all files
@@ -143,29 +198,48 @@ def main():
         # Turn off GPU monitoring and debug logging
         config.update_training_config(log_gpu_memory=False, log_gpu_utilization=False)
         # Override training parameters if specified
+        effective_lr = args.learning_rate if args.learning_rate is not None else config.training_config.learning_rate
         config.update_training_config(
             num_epochs=args.epochs,  
             batch_size=args.batch_size,
-            learning_rate=args.learning_rate * 0.1 if args.learning_rate else 0.0001,
+            learning_rate=effective_lr,
             model_save_path=str(output_dir / "cnp_model.pt"),
             losses_save_path=str(output_dir / "cnp_training_losses.csv"),
             predictions_dir=str(output_dir / "cnp_predictions"),
             use_early_stopping=False
         )
-        
+        logger.info(f"Effective learning rate for this run: {effective_lr}")
+
+        # Optional strict determinism (opt-in via CLI)
+        if args.strict_determinism:
+            seed = getattr(config.training_config, 'random_seed', 42)
+            set_global_determinism(seed)
+            logger.info(f"Strict determinism enabled with seed={seed}")
+        else:
+            logger.info("Strict determinism disabled (default). Running with standard PyTorch settings.")
+
+        # Optional global dropout override for reproducibility testing
+        if args.dropout_p is not None:
+            try:
+                old_p = getattr(config.model_config, 'dropout_p', None)
+                config.update_model_config(dropout_p=float(args.dropout_p))
+                logger.info(f"Global model dropout overridden: {old_p} -> {config.model_config.dropout_p}")
+            except Exception as e:
+                logger.warning(f"Failed to apply --dropout-p override: {e}")
+
         # --- FORCE 2D COLUMN ALIGNMENT FOR SAFETY ---
-        aligned_2d_vars = [
-            'cwdc_vr', 'cwdn_vr', 'secondp_vr', 'cwdp_vr',
-            'litr1c_vr', 'litr2c_vr', 'litr3c_vr',
-            'litr1n_vr', 'litr2n_vr', 'litr3n_vr',
-            'litr1p_vr', 'litr2p_vr', 'litr3p_vr',
-            'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
-            'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
-            'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
-            'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
-        ]
-        config.data_config.x_list_columns_2d = aligned_2d_vars
-        config.data_config.y_list_columns_2d = ['Y_' + v for v in aligned_2d_vars]
+        #aligned_2d_vars = [
+        #    'cwdc_vr', 'cwdn_vr', 'secondp_vr', 'cwdp_vr',
+        #    'litr1c_vr', 'litr2c_vr', 'litr3c_vr',
+        #    'litr1n_vr', 'litr2n_vr', 'litr3n_vr',
+        #    'litr1p_vr', 'litr2p_vr', 'litr3p_vr',
+        #    'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
+        #    'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
+        #    'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
+        #    'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
+        #]
+        #config.data_config.x_list_columns_2d = aligned_2d_vars
+        #config.data_config.y_list_columns_2d = ['Y_' + v for v in aligned_2d_vars]
         # print('x_list_columns_2d (forced):', config.data_config.x_list_columns_2d)
         # print('y_list_columns_2d (forced):', config.data_config.y_list_columns_2d)
         assert config.data_config.y_list_columns_2d == ['Y_' + v for v in config.data_config.x_list_columns_2d], \
@@ -183,6 +257,38 @@ def main():
         data_loader.load_data()
         data_loader.preprocess_data()
         data_info = data_loader.get_data_info()
+        # One-time config dump: resolved variables and training params
+        resolved = {
+            'time_series_columns': data_info.get('time_series_columns', []),
+            'static_columns': data_info.get('static_columns', []),
+            'pft_param_columns': data_info.get('pft_param_columns', []),
+            'x_list_scalar_columns': data_info.get('x_list_scalar_columns', []),
+            'y_list_scalar_columns': data_info.get('y_list_scalar_columns', []),
+            'variables_1d_pft': data_info.get('variables_1d_pft', []),
+            'y_list_columns_1d': data_info.get('y_list_columns_1d', []),
+            'x_list_columns_2d': data_info.get('x_list_columns_2d', []),
+            'y_list_columns_2d': data_info.get('y_list_columns_2d', []),
+            'training': {
+                'num_epochs': config.training_config.num_epochs,
+                'batch_size': config.training_config.batch_size,
+                'learning_rate': config.training_config.learning_rate,
+                'optimizer_type': config.training_config.optimizer_type,
+                'use_scheduler': config.training_config.use_scheduler,
+                'scheduler_type': config.training_config.scheduler_type,
+                'device': config.training_config.device,
+                'use_mixed_precision': config.training_config.use_mixed_precision,
+                'use_amp': config.training_config.use_amp,
+                'use_grad_scaler': config.training_config.use_grad_scaler,
+                'random_seed': getattr(config.training_config, 'random_seed', None),
+                'deterministic': getattr(config.training_config, 'deterministic', None),
+                'train_split': getattr(config.data_config, 'train_split', None),
+                'shuffle_seed': getattr(config.training_config, 'shuffle_seed', None),
+                'max_files': getattr(config.data_config, 'max_files', None)
+            }
+        }
+        logger.info(f"Resolved variable lists and params: {json.dumps(resolved, indent=2)}")
+        with open(output_dir / 'resolved_config.json', 'w') as f:
+            json.dump(resolved, f, indent=2)
         
         # Normalize data
         logger.info("Normalizing data...")

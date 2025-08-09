@@ -54,6 +54,8 @@ class CNPCombinedModel(nn.Module):
         self.include_water = include_water
         self.use_learnable_loss_weights = use_learnable_loss_weights
         self.token_dim = self.model_config.token_dim  # <-- Fix: set token_dim before feature fusion
+        # Centralized dropout probability (allows disabling for strict determinism)
+        self.dropout_p = getattr(self.model_config, 'dropout_p', 0.1)
         
         # Calculate input dimensions
         self._calculate_input_dimensions()
@@ -139,7 +141,7 @@ class CNPCombinedModel(nn.Module):
             hidden_size=self.model_config.lstm_hidden_size,
             num_layers=2,
             batch_first=True,
-            dropout=0.1
+            dropout=self.dropout_p
         )
     
     def _build_surface_encoder(self):
@@ -148,7 +150,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_surface = nn.Sequential(
                 nn.Linear(self.surface_input_size, self.model_config.static_fc_size),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(self.model_config.static_fc_size, self.model_config.static_fc_size // 2)
             )
         else:
@@ -162,7 +164,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_pft_1d = nn.Sequential(
                 nn.Linear(input_dim, 256),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(256, output_dim)
             )
             self.pft_1d_output_dim = output_dim
@@ -181,7 +183,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_water = nn.Sequential(
                 nn.Linear(self.water_input_size, 32),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(32, 16)
             )
         else:
@@ -193,7 +195,7 @@ class CNPCombinedModel(nn.Module):
             self.fc_scalar = nn.Sequential(
                 nn.Linear(self.scalar_input_size, 32),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(32, 16)
             )
         else:
@@ -218,7 +220,7 @@ class CNPCombinedModel(nn.Module):
                     ),
                     nn.BatchNorm2d(out_channels),
                     nn.ReLU(),
-                    nn.Dropout2d(0.1)
+                    nn.Dropout2d(self.dropout_p)
                 ])
                 if use_pooling and i < len(self.model_config.conv_channels) - 1:
                     layers.append(nn.MaxPool2d(2))
@@ -230,7 +232,7 @@ class CNPCombinedModel(nn.Module):
                 nn.Flatten(),
                 nn.Linear(conv_output_size, 128),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(128, 128)  # Changed from 64 to 128 to match expected output size
             ])
             self.cnn_soil2d = nn.Sequential(*layers)
@@ -239,25 +241,29 @@ class CNPCombinedModel(nn.Module):
             logger.warning("No soil 2D variables found.")
 
     def _build_pft_param_encoder(self):
-        pft_param_size = len(self.data_info.get('pft_param_columns', []))
-        # Dynamically determine number of PFTs from the first valid value in data_info if available
-        num_pfts = None
-        if 'pft_param_columns' in self.data_info and pft_param_size > 0:
-            sample_col = self.data_info['pft_param_columns'][0]
-            # Try to get a sample from the data loader if available, else fallback
-            num_pfts = 17  # fallback
-        else:
-            num_pfts = 17  # fallback
-        if pft_param_size > 0:
+        pft_param_size = self.model_config.pft_param_size
+        num_pfts = self.model_config.num_pfts
+        if not hasattr(self.model_config, 'use_cnn_for_pft_param') or not self.model_config.use_cnn_for_pft_param:
+            # Use FC for mini/simple model
             self.fc_pft_param = nn.Sequential(
-                nn.Linear(pft_param_size * num_pfts, self.model_config.fc_hidden_size),
+                nn.Linear(num_pfts, 64),
                 nn.ReLU(),
-                nn.Dropout(0.1),
-                nn.Linear(self.model_config.fc_hidden_size, self.model_config.fc_hidden_size // 2)
+                nn.Linear(64, 64)
             )
+            self.cnn_pft_param = None
+            logger.info(f"Using FC encoder for PFT parameters with {num_pfts} PFTs")
         else:
+            # Use 2D CNN for CNPCombinedModel
+            self.cnn_pft_param = nn.Sequential(
+                nn.Conv2d(1, 32, kernel_size=(3, 3), padding=(1, 1)),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=(3, 3), padding=(1, 1)),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool2d((1, 1)),
+                nn.Flatten(),  # Output: [batch, 64]
+            )
             self.fc_pft_param = None
-            logger.warning("No PFT param columns found.")
+            logger.info(f"Using 2D CNN encoder for PFT parameters with {pft_param_size} parameters and {num_pfts} PFTs")
 
     def _get_soil2d_channels(self):
         # Count number of soil 2D variables
@@ -286,7 +292,10 @@ class CNPCombinedModel(nn.Module):
             self.active_encoder_output_sizes.append(self.model_config.static_fc_size // 2)
         if self.fc_pft_param is not None:
             self.active_encoders.append('pft_param')
-            self.active_encoder_output_sizes.append(self.model_config.fc_hidden_size // 2)
+            self.active_encoder_output_sizes.append(64)
+        elif self.cnn_pft_param is not None:
+            self.active_encoders.append('pft_param')
+            self.active_encoder_output_sizes.append(64) # Changed from fc_hidden_size // 2 to 64
         if self.fc_scalar is not None:
             self.active_encoders.append('scalar')
             self.active_encoder_output_sizes.append(16)
@@ -309,10 +318,14 @@ class CNPCombinedModel(nn.Module):
         # Calculate concatenated feature size
         concatenated_feature_size = sum(self.active_encoder_output_sizes)
         self.concatenated_feature_size = concatenated_feature_size
+        # Debug: Print out active encoder sizes
+        logger.info(f"Active encoder output sizes: {self.active_encoder_output_sizes}")
+        logger.info(f"Total concatenated feature size: {concatenated_feature_size}")
         # Ensure output size is a multiple of token_dim
         num_tokens = max(1, (concatenated_feature_size + self.token_dim - 1) // self.token_dim)
         self.model_config.num_tokens = num_tokens
         output_size = num_tokens * self.token_dim
+        logger.info(f"Feature projection: input size {concatenated_feature_size}, output size {output_size}")
         self.feature_projection = nn.Linear(
             concatenated_feature_size, output_size
         )
@@ -321,7 +334,7 @@ class CNPCombinedModel(nn.Module):
                 d_model=self.token_dim, 
                 nhead=self.model_config.transformer_heads, 
                 dim_feedforward=self.token_dim * 4,
-                dropout=0.1,
+                dropout=self.dropout_p,
                 batch_first=True
             ),
             num_layers=self.model_config.transformer_layers
@@ -335,7 +348,7 @@ class CNPCombinedModel(nn.Module):
             self.water_head = nn.Sequential(
                 nn.Linear(self.token_dim, 64),
                 nn.ReLU(),
-                nn.Dropout(0.1),
+                nn.Dropout(self.dropout_p),
                 nn.Linear(64, 6)  # 6 water variables
             )
         else:
@@ -345,21 +358,22 @@ class CNPCombinedModel(nn.Module):
             nn.Linear(self.token_dim, 64),
             nn.BatchNorm1d(64),  # Add BatchNorm
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(self.dropout_p),
             nn.Linear(64, self.model_config.scalar_output_size)  # 6 scalar variables
         )
-        # 2D output head (28 2D soil variables)
+        # 2D output head (dynamic number of 2D soil variables)
+        n_2d_vars = len(self.data_info.get('y_list_columns_2d', []))
         self.matrix_head = nn.Sequential(
             nn.Linear(self.token_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, self.model_config.matrix_output_size * self.model_config.matrix_rows * self.model_config.matrix_cols)
+            nn.Dropout(self.dropout_p),
+            nn.Linear(128, n_2d_vars * self.model_config.matrix_rows * self.model_config.matrix_cols)
         )
         # 1D PFT output head (14 variables x 16 PFTs)
         self.pft_1d_head = nn.Sequential(
             nn.Linear(self.token_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(self.dropout_p),
             nn.Linear(128, self.pft_1d_input_size * self.model_config.vector_length)  # 14 x 16
         )
     
@@ -403,10 +417,11 @@ class CNPCombinedModel(nn.Module):
                     features.append(surface_features)
                     logger.info(f"Feature group: surface, shape: {surface_features.shape}")
             elif encoder_name == 'pft_param':
-                if pft_param_data is not None and self.fc_pft_param is not None:
-                    # Flatten [batch, 44, 17] to [batch, 44*17]
-                    pft_param_flat = pft_param_data.view(pft_param_data.size(0), -1)
-                    pft_param_features = self.fc_pft_param(pft_param_flat)
+                if pft_param_data is not None and self.cnn_pft_param is not None:
+                    # pft_param_data: [batch, num_pfts, pft_param_size]
+                    # CNN expects (batch, channels, sequence_length) = (batch, pft_param_size, num_pfts)
+                    x = pft_param_data.transpose(1, 2)  # (batch, pft_param_size, num_pfts)
+                    pft_param_features = self.cnn_pft_param(x)
                     features.append(pft_param_features)
             elif encoder_name == 'scalar':
                 if self.fc_scalar is not None:
@@ -476,11 +491,23 @@ class CNPCombinedModel(nn.Module):
             static_features = self.fc_surface(static_data)
             # print("NaNs in static_features:", torch.isnan(static_features).sum().item(), "shape:", static_features.shape)
             features.append(static_features)
-        # PFT param encoder # [batch, 748]
+        # PFT param encoder
         if self.fc_pft_param is not None:
-            pft_param_flat = pft_param_data.view(pft_param_data.size(0), -1)  # [batch, 748]
-            pft_param_features = self.fc_pft_param(pft_param_flat)
-            # print("NaNs in pft_param_features:", torch.isnan(pft_param_features).sum().item(), "shape:", pft_param_features.shape)
+            # mini/simple model: pft_param_data shape [batch, num_pfts, 1] or [batch, 1, num_pfts]
+            if pft_param_data.shape[-1] == self.model_config.num_pfts:
+                x = pft_param_data.squeeze(-2)  # [batch, num_pfts]
+            else:
+                x = pft_param_data.squeeze(-1)  # [batch, num_pfts]
+            pft_param_features = self.fc_pft_param(x)
+            features.append(pft_param_features)
+        elif self.cnn_pft_param is not None:
+            # CNPCombinedModel: pft_param_data shape [batch, num_pfts, pft_param_size] or [batch, pft_param_size, num_pfts]
+            if pft_param_data.shape[1] == self.model_config.num_pfts:
+                x = pft_param_data.permute(0, 2, 1)  # [batch, pft_param_size, num_pfts]
+            else:
+                x = pft_param_data
+            x = x.unsqueeze(1)  # [batch, 1, pft_param_size, num_pfts]
+            pft_param_features = self.cnn_pft_param(x)
             features.append(pft_param_features)
         # Scalar encoder
         if self.fc_scalar is not None:
@@ -513,11 +540,10 @@ class CNPCombinedModel(nn.Module):
         # Output heads
         outputs = {}
         scalar_pred = self.scalar_head(fused_features)
-        # Debug: Check for NaNs in scalar_pred
-        # print("NaNs in scalar_pred:", torch.isnan(scalar_pred).sum().item())
-        outputs['scalar'] = scalar_pred
-        outputs['pft_1d'] = self.pft_1d_head(fused_features)
-        outputs['soil_2d'] = self.matrix_head(fused_features)
+        # Apply non-negativity constraint to all outputs (all are pools)
+        outputs['scalar'] = torch.relu(scalar_pred)
+        outputs['pft_1d'] = torch.relu(self.pft_1d_head(fused_features))
+        outputs['soil_2d'] = torch.relu(self.matrix_head(fused_features))
         return outputs
     
     def get_loss_weights(self) -> Dict[str, float]:

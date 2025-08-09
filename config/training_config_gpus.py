@@ -94,8 +94,8 @@ class TrainingConfigGPUs:
     empty_cache_freq: int = 10
     max_memory_usage: float = 0.9
     memory_efficient_attention: bool = True
-    log_gpu_memory: bool = True
-    log_gpu_utilization: bool = True
+    log_gpu_memory: bool = False
+    log_gpu_utilization: bool = False
     gpu_monitor_interval: int = 100
     save_model: bool = True
     model_save_path: str = "LSTM_model.pt"

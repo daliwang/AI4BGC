@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 import logging
 import os
+import re
 
 
 @dataclass
@@ -124,6 +125,8 @@ class ModelConfig:
     token_dim: int = 64
     transformer_layers: int = 2
     transformer_heads: int = 4
+    # Global dropout probability (set to 0.0 for bit-for-bit reproducibility)
+    dropout_p: float = 0.1
     
     # Output dimensions
     scalar_output_size: int = 5
@@ -134,13 +137,18 @@ class ModelConfig:
     matrix_cols: int = 10
 
     # FC for PFT parameters (44 variables)
-    pft_param_fc_size: int = 64
+    # CNN for PFT parameters (44 variables)
+    pft_param_cnn_channels: List[int] = field(default_factory=lambda: [32, 64])
+    pft_param_cnn_kernel_size: int = 3
+    pft_param_cnn_padding: int = 1
     # FC for water variables (6 variables)
     water_fc_size: int = 64
     # FC for scalar variables (4 variables)
     scalar_fc_size: int = 64
     # FC for 1D PFT variables (14 variables)
     pft_1d_fc_size: int = 64
+    num_pfts: int = 17  # Number of PFTs (default/fallback)
+    use_cnn_for_pft_param: bool = False  # Whether to use CNN for PFT parameters
 
 
 @dataclass
@@ -190,8 +198,8 @@ class TrainingConfig:
     memory_efficient_attention: bool = True  # Use memory efficient attention if available
     
     # GPU Monitoring
-    log_gpu_memory: bool = True  # Log GPU memory usage
-    log_gpu_utilization: bool = True  # Log GPU utilization
+    log_gpu_memory: bool = False  # Log GPU memory usage
+    log_gpu_utilization: bool = False  # Log GPU utilization
     gpu_monitor_interval: int = 100  # Log GPU stats every N batches
     
     # Logging and saving
@@ -207,7 +215,7 @@ class TrainingConfig:
     
     # Fair comparison settings
     random_seed: int = 42  # Fixed random seed
-    deterministic: bool = True  # Ensure deterministic behavior
+    deterministic: bool = False  # Relax strict determinism by default
 
     # Learnable loss weighting for CNP model
     use_learnable_loss_weights: bool = False
@@ -336,6 +344,9 @@ def get_default_config() -> TrainingConfigManager:
     config.model_config.scalar_output_size = len(config.data_config.y_list_scalar_columns)  # 2 outputs
     config.model_config.matrix_output_size = len(config.data_config.y_list_columns_2d)     # 1 output
     config.model_config.vector_output_size = len(config.data_config.y_list_columns_1d)    # 1 output
+    config.model_config.pft_param_size = 1
+    config.model_config.num_pfts = 17
+    config.model_config.use_cnn_for_pft_param = False  # Use FC for mini/simple model
     
     # Update training config for simpler, more reliable training
     config.training_config.use_mixed_precision = False  # Disable for simplicity
@@ -378,11 +389,60 @@ def get_cnp_model_config_with_water() -> TrainingConfigManager:
     """
     return get_cnp_model_config(include_water=True) 
 
+def parse_cnp_io_list(filename):
+    """
+    Parse a CNP IO variable list file into a dictionary of variable groups.
+    Args:
+        filename (str): Path to the variable list file (e.g., CNP_IO_list_general.txt)
+    Returns:
+        dict: Mapping of variable group keys to lists of variable names.
+    """
+    # Map section titles to config keys
+    section_map = {
+        'TIME SERIES VARIABLES': 'time_series_variables',
+        'SURFACE PROPERTIES': 'surface_properties',
+        'PFT PARAMETERS': 'pft_parameters',
+        'WATER VARIABLES': 'water_variables',
+        'TEMPERATURE VARIABLES': 'temperature_variables',
+        'SCALAR VARIABLES': 'scalar_variables',
+        '1D PFT VARIABLES': 'pft_1d_variables',
+        '2D VARIABLES': 'variables_2d_soil'
+    }
+    # Prepare result dict
+    result = {v: [] for v in section_map.values()}
+    current_section = None
+
+    with open(filename) as f:
+        for line in f:
+            line = line.strip()
+            # Section header detection
+            for section_title, key in section_map.items():
+                if line.startswith(section_title):
+                    current_section = key
+                    break
+            else:
+                # If line is a variable line (starts with • or comma-separated list)
+                if current_section and line.startswith('•'):
+                    # Remove bullet and split by comma, filter out empty strings
+                    vars_ = [v.strip() for v in line[1:].split(',') if v.strip()]
+                    result[current_section].extend(vars_)
+                # Some variables are listed as comma-separated after a bullet
+                elif current_section and ',' in line and not line.startswith('['):
+                    vars_ = [v.strip('• ').strip() for v in line.split(',') if v.strip('• ').strip()]
+                    result[current_section].extend(vars_)
+                # Some variables are listed as single words (rare, but just in case)
+                elif current_section and line and not line.startswith('[') and not line.startswith('#'):
+                    # Only add if it's not a description or exclusion
+                    if re.match(r'^[A-Za-z0-9_]+$', line):
+                        result[current_section].append(line)
+    return result
+
 def get_cnp_combined_config(
     use_trendy1: bool = True,
     use_trendy05: bool = True,
     max_files: Optional[int] = None,
-    include_water: bool = False
+    include_water: bool = False,
+    variable_list_path: Optional[str] = None
 ) -> TrainingConfigManager:
     """
     Get CNP model configuration for Trendy_1_data_CNP, Trendy_05_data_CNP, or both.
@@ -390,6 +450,7 @@ def get_cnp_combined_config(
         use_trendy1: Whether to include Trendy_1_data_CNP
         use_trendy05: Whether to include Trendy_05_data_CNP
         max_files: Maximum number of files to use from each dataset
+        variable_list_path: Path to a custom variable list file (e.g., CNP_IO_4Plist.txt)
     Returns:
         TrainingConfigManager with combined configuration
     """
@@ -397,14 +458,12 @@ def get_cnp_combined_config(
     data_paths = []
     file_patterns = []
     if use_trendy1:
-        data_paths.append("/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trendy_1_data_CNP")
-        file_patterns.append("dataset_part_*.pkl")
-    if use_trendy05:
-        data_paths.append("/global/cfs/cdirs/m4814/wangd/AI4BGC/TrainingData/Trendy_05_data_CNP")
+        data_paths.append("/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_1_data_CNP")
         file_patterns.append("1_training_data_batch_*.pkl")
-    # If only one dataset, use its pattern as a string, else use a list
+    if use_trendy05:
+        data_paths.append("/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_05_data_CNP")
+        file_patterns.append("1_training_data_batch_*.pkl")
     file_pattern = file_patterns[0] if len(file_patterns) == 1 else file_patterns
-    # Ensure 1D input/output columns match
 
     config.update_data_config(
         data_paths=data_paths,
@@ -418,121 +477,87 @@ def get_cnp_combined_config(
         max_2d_rows=18,
         max_2d_cols=10,
     )
-    
-    # Time series variables (6 variables)
-    config.update_data_config(
-        time_series_columns=['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT']
-    )
-    
-    # Surface Properties (31 variables) - Geographic, Soil Phosphorus Forms, PFT Coverage, Soil Texture
-    surface_properties = [
-        # Geographic (7 variables) - using actual dataset column names
-        'Latitude', 'Longitude', 'AREA', 'landfrac', 'LANDFRAC_PFT',
-        # Soil Phosphorus Forms (4 variables)
+
+    # Defaults
+    default_time_series = ['FLDS', 'PSRF', 'FSDS', 'QBOT', 'PRECTmms', 'TBOT']
+    default_surface = [
+        'Latitude', 'Longitude', 'AREA', 'landfrac', 'LANDFRAC_PFT', 'PCT_NATVEG',
         'OCCLUDED_P', 'SECONDARY_P', 'LABILE_P', 'APATITE_P',
-        # PFT Coverage (17 variables) - using actual dataset column names
+        'SOIL_COLOR', 'SOIL_ORDER',
         'PCT_NAT_PFT_0', 'PCT_NAT_PFT_1', 'PCT_NAT_PFT_2', 'PCT_NAT_PFT_3', 'PCT_NAT_PFT_4', 
         'PCT_NAT_PFT_5', 'PCT_NAT_PFT_6', 'PCT_NAT_PFT_7', 'PCT_NAT_PFT_8', 'PCT_NAT_PFT_9', 
         'PCT_NAT_PFT_10', 'PCT_NAT_PFT_11', 'PCT_NAT_PFT_12', 'PCT_NAT_PFT_13', 'PCT_NAT_PFT_14', 
-        'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16', 'PCT_NATVEG',
-        # Soil Texture (10 variables) - using actual dataset column names
+        'PCT_NAT_PFT_15', 'PCT_NAT_PFT_16',
         'PCT_CLAY_0', 'PCT_CLAY_1', 'PCT_CLAY_2', 'PCT_CLAY_3', 'PCT_CLAY_4', 
         'PCT_CLAY_5', 'PCT_CLAY_6', 'PCT_CLAY_7', 'PCT_CLAY_8', 'PCT_CLAY_9',
         'PCT_SAND_0', 'PCT_SAND_1', 'PCT_SAND_2', 'PCT_SAND_3', 'PCT_SAND_4', 
         'PCT_SAND_5', 'PCT_SAND_6', 'PCT_SAND_7', 'PCT_SAND_8', 'PCT_SAND_9'
     ]
-    
-    # PFT Parameters (44 variables, each is a vector per PFT)
-    pft_parameters = [
-        'pft_deadwdcn', 'pft_frootcn', 'pft_leafcn', 'pft_lflitcn', 'pft_livewdcn',
-        'pft_c3psn', 'pft_croot_stem', 'pft_crop', 'pft_dleaf', 'pft_dsladlai', 'pft_evergreen', 
-        'pft_fcur', 'pft_flivewd', 'pft_flnr', 'pft_fr_fcel', 'pft_fr_flab', 'pft_fr_flig', 
-        'pft_froot_leaf', 'pft_grperc', 'pft_grpnow', 'pft_leaf_long', 'pft_lf_fcel', 
-        'pft_lf_flab', 'pft_lf_flig', 'pft_rholnir', 'pft_rholvis', 'pft_rhosnir', 'pft_rhosvis', 
-        'pft_roota_par', 'pft_rootb_par', 'pft_rootprof_beta', 'pft_season_decid', 'pft_slatop', 
-        'pft_smpsc', 'pft_smpso', 'pft_stem_leaf', 'pft_stress_decid', 'pft_taulnir', 
-        'pft_taulvis', 'pft_tausnir', 'pft_tausvis', 'pft_woody', 'pft_xl', 'pft_z0mr'
+
+    default_pft_parameters = [
+        'pft_deadwdcn', 'pft_frootcn', 'pft_leafcn', 'pft_lflitcn', 'pft_livewdcn', 'pft_c3psn', 'pft_croot_stem', 'pft_crop', 'pft_dleaf', 'pft_dsladlai', 'pft_evergreen', 'pft_fcur', 'pft_flivewd', 'pft_flnr', 'pft_fr_fcel', 'pft_fr_flab', 'pft_fr_flig', 'pft_froot_leaf', 'pft_grperc', 'pft_grpnow', 'pft_leaf_long', 'pft_lf_fcel', 'pft_lf_flab', 'pft_lf_flig', 'pft_rholnir', 'pft_rholvis', 'pft_rhosnir', 'pft_rhosvis', 'pft_roota_par', 'pft_rootb_par', 'pft_rootprof_beta', 'pft_season_decid', 'pft_slatop', 'pft_smpsc', 'pft_smpso', 'pft_stem_leaf', 'pft_stress_decid', 'pft_taulnir', 'pft_taulvis', 'pft_tausnir', 'pft_tausvis', 'pft_woody', 'pft_xl', 'pft_z0mr'
     ]
-    
-    # Water variables (6 variables - actual dataset variables)
-    water_variables = ['H2OCAN', 'H2OSFC', 'H2OSNO', 'TH2OSFC', 'H2OSOI_LIQ', 'H2OSOI_ICE']
-    
-    # Scalar variables (5 variables) - using actual dataset variables
-    scalar_variables = ['GPP', 'NPP', 'AR', 'HR']  # Removed TLAI (moved to 2D PFT)
-    
-    # 2D Soil variables (28 variables - soil-related layered data)
-    variables_2d_soil = [
-        'cwdc_vr', 'cwdn_vr', 'secondp_vr', 'cwdp_vr',
+    default_water = ['H2OCAN', 'H2OSFC', 'H2OSNO', 'TH2OSFC', 'H2OSOI_LIQ', 'H2OSOI_ICE']
+    default_scalar = ['GPP', 'NPP', 'AR', 'HR']
+    default_pft_1d = [
+        'deadcrootc', 'deadcrootn', 'deadcrootp', 'deadstemc', 'deadstemn', 'deadstemp',
+        'frootc', 'frootc_storage', 'leafc', 'leafc_storage', 'totvegc', 'tlai'
+    ]
+    default_2d_soil = [
+        'cwdc_vr', 'cwdn_vr', 'cwdp_vr',
         'litr1c_vr', 'litr2c_vr', 'litr3c_vr',
         'litr1n_vr', 'litr2n_vr', 'litr3n_vr',
         'litr1p_vr', 'litr2p_vr', 'litr3p_vr',
         'sminn_vr', 'smin_no3_vr', 'smin_nh4_vr',
-        'soil1c_vr', 'soil2c_vr', 'soil3c_vr', 'soil4c_vr',
-        'soil1n_vr', 'soil2n_vr', 'soil3n_vr', 'soil4n_vr',
-        'soil1p_vr', 'soil2p_vr', 'soil3p_vr', 'soil4p_vr'
+        'soil1c_vr', 'soil1n_vr', 'soil1p_vr', 
+        'soil2c_vr', 'soil2n_vr', 'soil2p_vr', 
+        'soil3c_vr', 'soil3n_vr', 'soil3p_vr', 
+        'soil4c_vr', 'soil4n_vr', 'soil4p_vr'
+    #        'secondp_vr' # this is not in the list, but it is in the data  
     ]
-    output_2d = ['Y_' + v for v in variables_2d_soil]
-    assert output_2d == ['Y_' + v for v in variables_2d_soil], \
-        f"2D input/output lists not aligned!\nInput: {variables_2d_soil}\nOutput: {output_2d}"
-    
-    # 1D PFT variables (14 variables - plant functional type related layered data)
-    pft_1d_variables = [
-        'deadcrootc', 'deadcrootn', 'deadcrootp', 'deadstemc', 'deadstemn', 'deadstemp',
-        'frootc', 'frootc_storage', 'leafc', 'leafc_storage', 'totcolp', 'totlitc', 'totvegc', 'tlai'
-    ]
-    
-    # Add PFT parameters as 2D variables
-    variables_pft_param = pft_parameters  # 44 PFT parameters, each is a vector of length 17 (PFTs)
-    
-    # Output variables - properly organized according to CNP_IO_list1.txt
-    output_water = ['Y_H2OCAN', 'Y_H2OSFC', 'Y_H2OSNO', 'Y_TH2OSFC', 'Y_H2OSOI_LIQ', 'Y_H2OSOI_ICE']
-    # Temperature variables excluded for first experiments
-    # output_temperature = ['Y_T_GRND_R', 'Y_T_GRND_U', 'Y_T_LAKE', 'Y_T_SOISNO', 'Y_T_GRND_1_', 'Y_T_GRND_2_', 'Y_T_GRND_3_']
-    
-    # Scalar outputs (4 variables) - according to CNP_IO_list1.txt
-    output_scalar = ['Y_GPP', 'Y_NPP', 'Y_AR', 'Y_HR']
-    
-    # 1D PFT outputs (14 variables) - according to CNP_IO_list1.txt
-    output_1d_pft = ['Y_' + v for v in pft_1d_variables]
-    assert output_1d_pft == ['Y_' + v for v in pft_1d_variables], \
-        f"1D input/output lists not aligned!\nInput: {pft_1d_variables}\nOutput: {output_1d_pft}"
 
-    
-    # Additional 2D variables (16 variables - other layered data) - EXCLUDED FOR FIRST EXPERIMENTS
-    # output_2d_other = [
-    #     'Y_taf', 'Y_H2OCAN', 'Y_H2OSFC', 'Y_H2OSNO', 'Y_TH2OSFC',
-    #     'Y_H2OSOI_LIQ', 'Y_H2OSOI_ICE', 'Y_T_GRND', 'Y_T_GRND_R', 'Y_T_GRND_U',
-    #     'Y_T_LAKE', 'Y_T_SOISNO', 'Y_T_VEG', 'Y_T10_VALUE', 'Y_TS_TOPO',
-    #     'Y_LAKE_SOILC'
-    # ]
-    output_2d_other = []  # Empty list for first experiments
-    
-    # Configure input variables based on water inclusion
-    if include_water:
-        # Include water variables
-        config.update_data_config(
-            static_columns=surface_properties,
-            pft_param_columns=pft_parameters,  # PFT parameters as their own group
-            x_list_water_columns=water_variables,
-            x_list_scalar_columns=scalar_variables,
-            x_list_columns_1d=pft_1d_variables,
-            x_list_columns_2d=variables_2d_soil,  # Only true 2D variables
-            y_list_water_columns=output_water,
-            y_list_scalar_columns=output_scalar,
-            y_list_columns_1d=output_1d_pft,  # Water and scalar outputs
-            y_list_columns_2d=output_2d  # All 2D outputs (with Y_ prefix)
-        )
+    # If a variable list file is provided, parse it
+    if variable_list_path is not None:
+        parsed = parse_cnp_io_list(variable_list_path)
+        time_series_columns = parsed.get('time_series_variables', default_time_series)
+        surface_properties = parsed.get('surface_properties', default_surface)
+        pft_parameters = parsed.get('pft_parameters', default_pft_parameters)
+        water_variables = parsed.get('water_variables', default_water)
+        scalar_variables = parsed.get('scalar_variables', default_scalar)
+        pft_1d_variables = parsed.get('pft_1d_variables', default_pft_1d)
+        variables_2d_soil = parsed.get('variables_2d_soil', default_2d_soil)
     else:
-        # Exclude water variables
-        config.update_data_config(
-            static_columns=surface_properties,
-            pft_param_columns=pft_parameters,  # PFT parameters as their own group
-            x_list_scalar_columns=scalar_variables,
-            x_list_columns_1d=pft_1d_variables,  # Only 1d pft variables
-            x_list_columns_2d=variables_2d_soil,  # Only true 2D variables
-            y_list_columns_1d=output_1d_pft,  # Scalar outputs
-            y_list_columns_2d=output_2d  # All 2D outputs (with Y_ prefix)
-        )
+        time_series_columns = default_time_series
+        surface_properties = default_surface
+        pft_parameters = default_pft_parameters
+        water_variables = default_water
+        scalar_variables = default_scalar
+        pft_1d_variables = default_pft_1d
+        variables_2d_soil = default_2d_soil
+
+    data_config_kwargs = dict(
+        time_series_columns=time_series_columns,
+        static_columns=surface_properties,
+        pft_param_columns=pft_parameters,
+        x_list_scalar_columns=scalar_variables,
+        x_list_columns_1d=pft_1d_variables,
+        x_list_columns_2d=variables_2d_soil
+    )
+    if include_water:
+        data_config_kwargs['x_list_water_columns'] = water_variables
+
+    config.update_data_config(**data_config_kwargs)
+
+    # Outputs
+    output_scalar = ['Y_' + v for v in scalar_variables]
+    output_1d_pft = ['Y_' + v for v in pft_1d_variables]
+    output_2d = ['Y_' + v for v in variables_2d_soil]
+
+    config.update_data_config(
+        y_list_scalar_columns=output_scalar,
+        y_list_columns_1d=output_1d_pft,
+        y_list_columns_2d=output_2d
+    )
     
     # Model configuration for CNP architecture
     config.update_model_config(
@@ -543,7 +568,10 @@ def get_cnp_combined_config(
         static_fc_size=64,  # Reduced from 128
         
         # FC for PFT parameters (44 variables) - separate from surface properties
-        pft_param_fc_size=64,  # Reduced from 128
+        # CNN for PFT parameters (44 variables)
+        pft_param_cnn_channels=[32, 64],  # Reduced from [32, 64, 128]
+        pft_param_cnn_kernel_size=3,
+        pft_param_cnn_padding=1,
 
         # FC for water variables (6 variables) - separate from surface properties
         water_fc_size=64 if include_water else 0,  # Reduced from 128
@@ -553,6 +581,7 @@ def get_cnp_combined_config(
 
         # FC for 1D PFT variables (14 variables) - separate from surface properties
         pft_1d_fc_size=64,  # Reduced from 128
+        num_pfts=17,
 
         # CNN for 2D soil variables (28 input variables, 28 output variables)
         conv_channels=[16, 32, 64],  # Reduced from [32, 64, 128, 256]
@@ -560,10 +589,10 @@ def get_cnp_combined_config(
         conv_padding=1,
         
         # Transformer parameters
-        num_tokens=4,  # Reduced from 8
-        token_dim=64,  # Reduced from 128
-        transformer_layers=2,  # Reduced from 4
-        transformer_heads=4,  # Reduced from 8
+        num_tokens=8,  # Reduced from 8
+        token_dim=128,  # Reduced from 128
+        transformer_layers=4,  # Reduced from 4
+        transformer_heads=8,  # Reduced from 8
         
         # Output dimensions - properly organized according to CNP_IO_list1.txt
         scalar_output_size=4,  # Y_GPP, Y_NPP, Y_AR, Y_HR (5 scalar variables)
@@ -571,15 +600,18 @@ def get_cnp_combined_config(
         vector_length=16,
         matrix_output_size=28,  # 2D variables (28)
         matrix_rows=18,  # we predict 18 rows of soil data  (double check this)
-        matrix_cols=10  # First 10 columns
+        matrix_cols=10,  # First 10 columns
+        
         # Temperature output excluded for first experiments
     )
+    config.model_config.pft_param_size = len(pft_parameters)  # which is 44
+    config.model_config.use_cnn_for_pft_param = True  # Use CNN for CNPCombinedModel
     
     # Training configuration
     config.update_training_config(
-        num_epochs=5,  # Reduced for testing with single file
-        batch_size=8,  # Further reduced batch size for GPU memory
-        learning_rate=0.001,
+        num_epochs=10,  # Reduced for testing with single file
+        batch_size=128,  # Further reduced batch size for GPU memory
+        learning_rate=0.0001,
         
         # Loss weights for different output types
         scalar_loss_weight=1.0,
@@ -594,7 +626,7 @@ def get_cnp_combined_config(
         scheduler_type='cosine',
         
         # Early stopping
-        use_early_stopping=True,
+        use_early_stopping=False,
         patience=3,  # Reduced for testing
         min_delta=0.001,
         
@@ -607,7 +639,7 @@ def get_cnp_combined_config(
         # GPU Memory Optimization
         empty_cache_freq=5,  # Empty GPU cache more frequently
         max_memory_usage=0.7,  # Use less GPU memory (70% instead of 90%)
-        memory_efficient_attention=True,
+        memory_efficient_attention=False,
         
         # DataLoader settings for CPU
         num_workers=0,  # No multiprocessing for CPU

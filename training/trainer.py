@@ -20,6 +20,7 @@ from tqdm import tqdm
 import warnings
 from torch.utils.data import TensorDataset, DataLoader
 import matplotlib.pyplot as plt
+from sklearn.metrics import r2_score
 
 # from config.training_config import TrainingConfig  # Uncomment if TrainingConfig is defined
 from models.combined_model import CombinedModel, FlexibleCombinedModel
@@ -93,6 +94,11 @@ class ModelTrainer:
             'water', 'y_water'
         ]
 
+        # DataLoader generator for deterministic shuffling
+        self._torch_generator = torch.Generator(device='cpu')
+        if hasattr(self.config, 'random_seed'):
+            self._torch_generator.manual_seed(self.config.random_seed)
+        
         # --- DEBUG: Force small batch size and minimal DataLoader workers for OOM debugging ---
         # print the shape of the tensors in the train and test data
         # print(f"[DEBUG] train_data['time_series'].shape: {self.train_data['time_series'].shape}")
@@ -130,6 +136,14 @@ class ModelTrainer:
 
         # Setup device for model
         self.model.to(self.device)
+        try:
+            first_param = next(self.model.parameters())
+            logger.info(f"Runtime device check: device={self.device}, cuda_available={torch.cuda.is_available()}, model_param_device={first_param.device}")
+            if torch.cuda.is_available() and self.device.type == 'cuda':
+                current_idx = torch.cuda.current_device()
+                logger.info(f"CUDA device index={current_idx}, name={torch.cuda.get_device_name(current_idx)}")
+        except StopIteration:
+            logger.warning("Model has no parameters to check device placement")
         
         # Initialize GPU monitoring
         self.gpu_monitor = GPUMonitor(self.device)
@@ -297,6 +311,7 @@ class ModelTrainer:
             train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
+            generator=self._torch_generator,
             pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers,
             prefetch_factor=(2 if self.config.num_workers > 0 else None),
@@ -478,6 +493,7 @@ class ModelTrainer:
             val_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
+            generator=self._torch_generator,
             pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers,
             prefetch_factor=(self.config.prefetch_factor if self.config.num_workers > 0 else None),
@@ -829,6 +845,7 @@ class ModelTrainer:
             eval_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
+            generator=self._torch_generator,
             pin_memory=self.config.pin_memory and self.device.type == 'cpu',  # Only pin memory for CPU tensors
             num_workers=self.config.num_workers
         )
@@ -877,26 +894,114 @@ class ModelTrainer:
         """Calculate evaluation metrics."""
         metrics = {}
         # Scalar
-        pred_scalar = predictions['scalar'].cpu().numpy().flatten()
-        target_scalar = targets['y_scalar'].cpu().numpy().flatten()
-        mask = ~np.isnan(pred_scalar) & ~np.isnan(target_scalar)
-        mse_scalar = mean_squared_error(target_scalar[mask], pred_scalar[mask])
-        metrics['scalar_rmse'] = np.sqrt(mse_scalar)
-        metrics['scalar_mse'] = mse_scalar
-        # PFT 1D
-        pred_pft_1d = predictions['pft_1d'].cpu().numpy().flatten()
-        target_pft_1d = targets['y_pft_1d'].cpu().numpy().flatten()
+        pred_scalar_full = predictions['scalar'].cpu().numpy()
+        target_scalar_full = targets['y_scalar'].cpu().numpy()
+        # Overall scalar metrics
+        mask_all = ~np.isnan(pred_scalar_full) & ~np.isnan(target_scalar_full)
+        mse_scalar_all = mean_squared_error(target_scalar_full[mask_all], pred_scalar_full[mask_all])
+        metrics['scalar_rmse'] = np.sqrt(mse_scalar_all)
+        metrics['scalar_mse'] = mse_scalar_all
+        # Per-scalar metrics with names
+        num_scalar = pred_scalar_full.shape[1]
+        scalar_names = self.data_info.get('y_list_scalar_columns', [f'scalar_{i}' for i in range(num_scalar)])
+        if len(scalar_names) != num_scalar:
+            scalar_names = [f'scalar_{i}' for i in range(num_scalar)]
+        for s in range(num_scalar):
+            pred_s = pred_scalar_full[:, s]
+            targ_s = target_scalar_full[:, s]
+            mask_s = ~np.isnan(pred_s) & ~np.isnan(targ_s)
+            if np.sum(mask_s) > 0:
+                mse_s = mean_squared_error(targ_s[mask_s], pred_s[mask_s])
+                rmse_s = np.sqrt(mse_s)
+                mean_s = np.mean(targ_s[mask_s])
+                nrmse_s = rmse_s / mean_s if mean_s != 0 else float('inf')
+                r2_s = r2_score(targ_s[mask_s], pred_s[mask_s])
+                name_s = scalar_names[s]
+                metrics[f'{name_s}_mse'] = mse_s
+                metrics[f'{name_s}_rmse'] = rmse_s
+                metrics[f'{name_s}_nrmse'] = nrmse_s
+                metrics[f'{name_s}_r2'] = r2_s
+        # PFT 1D - Detailed metrics per variable and PFT
+        pred_pft_1d = predictions['pft_1d'].cpu().numpy()
+        target_pft_1d = targets['y_pft_1d'].cpu().numpy()
+        # Ensure shapes are (samples, num_variables, num_pfts)
+        if pred_pft_1d.ndim == 2:
+            pred_pft_1d = pred_pft_1d.reshape(pred_pft_1d.shape[0], -1, 16)
+            target_pft_1d = target_pft_1d.reshape(target_pft_1d.shape[0], -1, 16)
+        num_variables = pred_pft_1d.shape[1]
+        num_pfts = pred_pft_1d.shape[2]
+        # Get variable names from data_info if available
+        var_names = self.data_info.get('y_list_columns_1d', [f'pft_1d_var_{i}' for i in range(num_variables)])
+        if len(var_names) != num_variables:
+            var_names = [f'pft_1d_var_{i}' for i in range(num_variables)]
+        # Overall metrics for pft_1d
         mask = ~np.isnan(pred_pft_1d) & ~np.isnan(target_pft_1d)
         mse_pft_1d = mean_squared_error(target_pft_1d[mask], pred_pft_1d[mask])
         metrics['pft_1d_rmse'] = np.sqrt(mse_pft_1d)
         metrics['pft_1d_mse'] = mse_pft_1d
+        # Detailed metrics per variable and PFT
+        for v in range(num_variables):
+            var_name = var_names[v]
+            for p in range(num_pfts):
+                mask_vp = ~np.isnan(pred_pft_1d[:, v, p]) & ~np.isnan(target_pft_1d[:, v, p])
+                if np.sum(mask_vp) > 0:
+                    mse_vp = mean_squared_error(target_pft_1d[:, v, p][mask_vp], pred_pft_1d[:, v, p][mask_vp])
+                    rmse_vp = np.sqrt(mse_vp)
+                    target_mean = np.mean(target_pft_1d[:, v, p][mask_vp])
+                    nrmse_vp = rmse_vp / target_mean if target_mean != 0 else float('inf')
+                    r2_vp = r2_score(target_pft_1d[:, v, p][mask_vp], pred_pft_1d[:, v, p][mask_vp])
+                    pft_idx = p + 1  # Use 1..16 in keys
+                    metrics[f'{var_name}_pft{pft_idx}_mse'] = mse_vp
+                    metrics[f'{var_name}_pft{pft_idx}_rmse'] = rmse_vp
+                    metrics[f'{var_name}_pft{pft_idx}_nrmse'] = nrmse_vp
+                    metrics[f'{var_name}_pft{pft_idx}_r2'] = r2_vp
         # Soil 2D
-        pred_soil_2d = predictions['soil_2d'].cpu().numpy().flatten()
-        target_soil_2d = targets['y_soil_2d'].cpu().numpy().flatten()
-        mask = ~np.isnan(pred_soil_2d) & ~np.isnan(target_soil_2d)
-        mse_soil_2d = mean_squared_error(target_soil_2d[mask], pred_soil_2d[mask])
+        pred_soil_2d = predictions['soil_2d'].cpu().numpy()
+        target_soil_2d = targets['y_soil_2d'].cpu().numpy()
+        # Ensure shapes match (samples, variables, columns, layers)
+        n_samples = pred_soil_2d.shape[0]
+        if pred_soil_2d.ndim == 2:
+            # If 2D, assume it's flattened and reshape to match target dimensions
+            if target_soil_2d.ndim == 4:
+                num_vars, num_cols, num_layers = target_soil_2d.shape[1:]
+                pred_soil_2d = pred_soil_2d.reshape(n_samples, num_vars, num_cols, num_layers)
+            elif target_soil_2d.ndim == 3:
+                num_vars, num_cols = target_soil_2d.shape[1:]
+                pred_soil_2d = pred_soil_2d.reshape(n_samples, num_vars, num_cols)
+        elif pred_soil_2d.ndim == 3 and target_soil_2d.ndim == 4:
+            num_vars, num_cols, num_layers = target_soil_2d.shape[1:]
+            pred_soil_2d = pred_soil_2d.reshape(n_samples, num_vars, num_cols, num_layers)
+        # Flatten both for overall metrics calculation
+        pred_soil_2d_flat = pred_soil_2d.reshape(n_samples, -1)
+        target_soil_2d_flat = target_soil_2d.reshape(n_samples, -1)
+        mask = ~np.isnan(pred_soil_2d_flat) & ~np.isnan(target_soil_2d_flat)
+        mse_soil_2d = mean_squared_error(target_soil_2d_flat[mask], pred_soil_2d_flat[mask])
         metrics['soil_2d_rmse'] = np.sqrt(mse_soil_2d)
         metrics['soil_2d_mse'] = mse_soil_2d
+        # Per-variable per-layer metrics (aggregated across columns)
+        num_variables_soil = pred_soil_2d.shape[1]
+        num_layers_soil = pred_soil_2d.shape[3] if pred_soil_2d.ndim == 4 else 1
+        soil_var_names = self.data_info.get('y_list_columns_2d', [f'soil_2d_var_{i}' for i in range(num_variables_soil)])
+        if len(soil_var_names) != num_variables_soil:
+            soil_var_names = [f'soil_2d_var_{i}' for i in range(num_variables_soil)]
+        if pred_soil_2d.ndim == 4 and target_soil_2d.ndim == 4:
+            for v in range(num_variables_soil):
+                var_name = soil_var_names[v]
+                for l in range(num_layers_soil):
+                    pred_slice = pred_soil_2d[:, v, :, l].reshape(-1)
+                    targ_slice = target_soil_2d[:, v, :, l].reshape(-1)
+                    mask_slice = ~np.isnan(pred_slice) & ~np.isnan(targ_slice)
+                    if np.sum(mask_slice) > 0:
+                        mse_vl = mean_squared_error(targ_slice[mask_slice], pred_slice[mask_slice])
+                        rmse_vl = np.sqrt(mse_vl)
+                        mean_vl = np.mean(targ_slice[mask_slice])
+                        nrmse_vl = rmse_vl / mean_vl if mean_vl != 0 else float('inf')
+                        r2_vl = r2_score(targ_slice[mask_slice], pred_slice[mask_slice])
+                        layer_idx = l + 1  # Use 1..num_layers
+                        metrics[f'{var_name}_layer{layer_idx}_mse'] = mse_vl
+                        metrics[f'{var_name}_layer{layer_idx}_rmse'] = rmse_vl
+                        metrics[f'{var_name}_layer{layer_idx}_nrmse'] = nrmse_vl
+                        metrics[f'{var_name}_layer{layer_idx}_r2'] = r2_vl
         return metrics
     
     def save_results(self, predictions: Dict[str, np.ndarray], metrics: Dict[str, float]):
@@ -935,6 +1040,18 @@ class ModelTrainer:
         metrics_df = pd.DataFrame([metrics])
         metrics_df.to_csv(predictions_dir / "test_metrics.csv", index=False)
         logger.info(f"Metrics saved to {predictions_dir / 'test_metrics.csv'}")
+
+        # Save inverse-transformed static features for test set to enable geospatial mapping
+        try:
+            if 'static' in self.test_data and 'static' in self.scalers and 'static_columns' in self.data_info:
+                static_np = self.test_data['static'].cpu().numpy()
+                static_inv = self.scalers['static'].inverse_transform(static_np)
+                static_cols = self.data_info['static_columns']
+                df_static = pd.DataFrame(static_inv, columns=static_cols)
+                df_static.to_csv(predictions_dir / 'test_static_inverse.csv', index=False)
+                logger.info(f"Inverse-transformed test static features saved to {predictions_dir / 'test_static_inverse.csv'}")
+        except Exception as e:
+            logger.warning(f"Failed to save inverse-transformed static features: {e}")
     
     def _save_predictions(self, predictions: Dict[str, np.ndarray], predictions_dir: Path):
         """Save predictions with inverse transformation."""
@@ -960,43 +1077,121 @@ class ModelTrainer:
         if 'pft_1d' in predictions and predictions['pft_1d'].numel() > 0:
             predictions_pft_1d_np = predictions['pft_1d'].cpu().numpy()
             n_samples = predictions_pft_1d_np.shape[0]
-            # Flatten if 3D
-            if predictions_pft_1d_np.ndim == 3:
-                predictions_pft_1d_np = predictions_pft_1d_np.reshape(n_samples, -1)
-            if 'y_list_pft_1d_columns' in self.data_info and len(self.data_info['y_list_pft_1d_columns']) == predictions_pft_1d_np.shape[1]:
-                pft_1d_cols = self.data_info['y_list_pft_1d_columns']
-            else:
-                pft_1d_cols = [f"pft_1d_{i}" for i in range(predictions_pft_1d_np.shape[1])]
-            predictions_1d_df = pd.DataFrame(predictions_pft_1d_np, columns=pft_1d_cols)
-            predictions_1d_df.to_csv(os.path.join(predictions_dir, 'predictions_1d.csv'), index=False)
+            # Ensure 3D shape (samples, variables, pfts)
+            if predictions_pft_1d_np.ndim == 2:
+                predictions_pft_1d_np = predictions_pft_1d_np.reshape(n_samples, -1, 16)
+            num_variables = predictions_pft_1d_np.shape[1]
+            num_pfts = predictions_pft_1d_np.shape[2]
+            # Get variable names from data_info if available
+            var_names = self.data_info.get('y_list_columns_1d', [f'pft_1d_var_{i}' for i in range(num_variables)])
+            if len(var_names) != num_variables:
+                var_names = [f'pft_1d_var_{i}' for i in range(num_variables)]
+            # Create a directory for pft_1d predictions
+            pft_1d_dir = os.path.join(predictions_dir, 'pft_1d_predictions')
+            os.makedirs(pft_1d_dir, exist_ok=True)
+            # Save predictions for each variable separately
+            for v in range(num_variables):
+                var_name = var_names[v]
+                var_predictions = predictions_pft_1d_np[:, v, :]
+                columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
+                var_df = pd.DataFrame(var_predictions, columns=columns)
+                var_df.to_csv(os.path.join(pft_1d_dir, f'predictions_{var_name}.csv'), index=False)
+            # Save ground truth if available
             if 'y_pft_1d' in self.test_data:
                 ground_truth_pft_1d_np = self.test_data['y_pft_1d'].cpu().numpy()
-                if ground_truth_pft_1d_np.ndim == 3:
-                    ground_truth_pft_1d_np = ground_truth_pft_1d_np.reshape(n_samples, -1)
-                ground_truth_1d_df = pd.DataFrame(ground_truth_pft_1d_np, columns=pft_1d_cols)
-                ground_truth_1d_df.to_csv(os.path.join(predictions_dir, 'ground_truth_1d.csv'), index=False)
-            logger.info("pft_1d predictions and ground truth saved successfully")
+                if ground_truth_pft_1d_np.ndim == 2:
+                    ground_truth_pft_1d_np = ground_truth_pft_1d_np.reshape(n_samples, -1, 16)
+                pft_1d_gt_dir = os.path.join(predictions_dir, 'pft_1d_ground_truth')
+                os.makedirs(pft_1d_gt_dir, exist_ok=True)
+                for v in range(num_variables):
+                    var_name = var_names[v]
+                    var_gt = ground_truth_pft_1d_np[:, v, :]
+                    columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
+                    var_gt_df = pd.DataFrame(var_gt, columns=columns)
+                    var_gt_df.to_csv(os.path.join(pft_1d_gt_dir, f'ground_truth_{var_name}.csv'), index=False)
+            logger.info("pft_1d predictions and ground truth saved separately for each variable and PFT")
 
         # Save soil_2d predictions if available
         if 'soil_2d' in predictions and predictions['soil_2d'].numel() > 0:
             predictions_soil_2d_np = predictions['soil_2d'].cpu().numpy()
             n_samples = predictions_soil_2d_np.shape[0]
-            # Flatten if 3D or higher
-            if predictions_soil_2d_np.ndim > 2:
-                predictions_soil_2d_np = predictions_soil_2d_np.reshape(n_samples, -1)
-            if 'y_list_soil_2d_columns' in self.data_info and len(self.data_info['y_list_soil_2d_columns']) == predictions_soil_2d_np.shape[1]:
-                soil_2d_cols = self.data_info['y_list_soil_2d_columns']
+            # Infer columns/layers from targets when possible
+            if 'y_soil_2d' in self.test_data and self.test_data['y_soil_2d'].ndim >= 3:
+                tgt_shape = self.test_data['y_soil_2d'].shape
+                # shapes: (n, vars, cols, layers) or (n, vars, cols)
+                num_columns = tgt_shape[2]
+                num_layers = tgt_shape[3] if len(tgt_shape) > 3 else 1
             else:
-                soil_2d_cols = [f"soil_2d_{i}" for i in range(predictions_soil_2d_np.shape[1])]
-            predictions_2d_df = pd.DataFrame(predictions_soil_2d_np, columns=soil_2d_cols)
-            predictions_2d_df.to_csv(os.path.join(predictions_dir, 'predictions_2d.csv'), index=False)
+                num_columns = 18
+                num_layers = 10
+            # Ensure 4D shape (samples, variables, columns, layers)
+            if predictions_soil_2d_np.ndim == 4:
+                num_variables = predictions_soil_2d_np.shape[1]
+            elif predictions_soil_2d_np.ndim == 3:
+                # (n, ?, ?) -> assume (?, cols*layers)
+                flat_per_sample = predictions_soil_2d_np.shape[2]
+                per_var = num_columns * num_layers
+                assert flat_per_sample % per_var == 0, f"Unexpected soil_2d width {flat_per_sample} not divisible by cols*layers {per_var}"
+                num_variables = flat_per_sample // per_var
+                predictions_soil_2d_np = predictions_soil_2d_np.reshape(n_samples, num_variables, num_columns, num_layers)
+            elif predictions_soil_2d_np.ndim == 2:
+                flat_per_sample = predictions_soil_2d_np.shape[1]
+                per_var = num_columns * num_layers
+                assert flat_per_sample % per_var == 0, f"Unexpected soil_2d width {flat_per_sample} not divisible by cols*layers {per_var}"
+                num_variables = flat_per_sample // per_var
+                predictions_soil_2d_np = predictions_soil_2d_np.reshape(n_samples, num_variables, num_columns, num_layers)
+            else:
+                raise ValueError(f"Unsupported soil_2d prediction ndim: {predictions_soil_2d_np.ndim}")
+            # Get variable names from data_info and align length
+            var_names_all = self.data_info.get('y_list_columns_2d', [])
+            if not var_names_all or len(var_names_all) < num_variables:
+                var_names = [f'soil_2d_var_{i}' for i in range(num_variables)]
+            else:
+                var_names = list(var_names_all)[:num_variables]
+            # Create a directory for soil_2d predictions
+            soil_2d_dir = os.path.join(predictions_dir, 'soil_2d_predictions')
+            os.makedirs(soil_2d_dir, exist_ok=True)
+            # Save predictions for each variable separately
+            for v in range(num_variables):
+                var_name = var_names[v]
+                var_predictions = predictions_soil_2d_np[:, v, :, :]
+                # Reshape to 2D for CSV (samples, columns*layers)
+                var_predictions_2d = var_predictions.reshape(n_samples, num_columns * num_layers)
+                columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
+                var_df = pd.DataFrame(var_predictions_2d, columns=columns)
+                var_df.to_csv(os.path.join(soil_2d_dir, f'predictions_{var_name}.csv'), index=False)
+            # Save ground truth if available
             if 'y_soil_2d' in self.test_data:
                 ground_truth_soil_2d_np = self.test_data['y_soil_2d'].cpu().numpy()
-                if ground_truth_soil_2d_np.ndim > 2:
-                    ground_truth_soil_2d_np = ground_truth_soil_2d_np.reshape(n_samples, -1)
-                ground_truth_2d_df = pd.DataFrame(ground_truth_soil_2d_np, columns=soil_2d_cols)
-                ground_truth_2d_df.to_csv(os.path.join(predictions_dir, 'ground_truth_2d.csv'), index=False)
-            logger.info("soil_2d predictions and ground truth saved successfully")
+                if ground_truth_soil_2d_np.ndim == 4:
+                    pass  # already (n, vars, cols, layers)
+                elif ground_truth_soil_2d_np.ndim == 3:
+                    # (n, vars, cols) -> expand layers=1
+                    ground_truth_soil_2d_np = ground_truth_soil_2d_np.reshape(n_samples, ground_truth_soil_2d_np.shape[1], num_columns, num_layers)
+                elif ground_truth_soil_2d_np.ndim == 2:
+                    flat_per_sample = ground_truth_soil_2d_np.shape[1]
+                    per_var = num_columns * num_layers
+                    assert flat_per_sample % per_var == 0, f"Unexpected y_soil_2d width {flat_per_sample} not divisible by cols*layers {per_var}"
+                    gt_num_variables = flat_per_sample // per_var
+                    # Align with predictions if mismatch
+                    if gt_num_variables != num_variables:
+                        logger.warning(f"Mismatch in soil_2d vars (pred={num_variables}, gt={gt_num_variables}); aligning to min")
+                        m = min(num_variables, gt_num_variables)
+                        num_variables = m
+                        var_names = var_names[:m]
+                    ground_truth_soil_2d_np = ground_truth_soil_2d_np.reshape(n_samples, num_variables, num_columns, num_layers)
+                else:
+                    raise ValueError(f"Unsupported y_soil_2d ndim: {ground_truth_soil_2d_np.ndim}")
+                soil_2d_gt_dir = os.path.join(predictions_dir, 'soil_2d_ground_truth')
+                os.makedirs(soil_2d_gt_dir, exist_ok=True)
+                for v in range(num_variables):
+                    var_name = var_names[v]
+                    var_gt = ground_truth_soil_2d_np[:, v, :, :]
+                    var_gt_2d = var_gt.reshape(n_samples, num_columns * num_layers)
+                    columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
+                    var_gt_df = pd.DataFrame(var_gt_2d, columns=columns)
+                    var_gt_df.to_csv(os.path.join(soil_2d_gt_dir, f'ground_truth_{var_name}.csv'), index=False)
+            logger.info("soil_2d predictions and ground truth saved separately for each variable, column, and layer")
 
         logger.info("All predictions saved successfully")
     

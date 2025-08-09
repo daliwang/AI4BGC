@@ -1,112 +1,139 @@
-# AI4BGC: Artificial Intelligence for Biogeochemical Cycle Simulation
+# AI4BGC v0.1 – Artificial Intelligence for Biogeochemical Cycles
 
-Welcome to the **AI4BGC** pre-release! This repository provides a modern, flexible, and high-performance deep learning framework for modeling terrestrial biogeochemical cycles using neural networks.
+AI4BGC is a deep learning framework for modeling terrestrial biogeochemical cycles with modern neural architectures and a flexible data pipeline.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. **Clone the Repository**
+### 1) Clone and setup environment
 ```bash
 git clone <your-repo-url>
 cd AI4BGC
-git checkout pre_release_branch
-```
-
-### 2. **Install Dependencies**
-We recommend using a conda environment:
-```bash
-conda create -n ai4bgc_env python=3.11
-conda activate ai4bgc_env
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. **Run a Demo Training (Default Model)**
+### 2) Train the quick-start default model
 ```bash
 python train_model.py
 ```
-- Trains a simple model on a small subset of the data (3 files, minimal variables)
-- Fast: completes in minutes
-- Great for testing, learning, and development
+- Small example dataset, fast to run, great for validation and demos.
 
-### 4. **Run Full CNP Model Training (Production/Research)**
+### 3) Train the full CNP model
 ```bash
-python train_cnp_model.py
+python train_cnp_model.py \
+  --output-dir cnp_results \
+  --epochs 50 \
+  --batch-size 128 \
+  --learning-rate 1e-4 \
+  --use-trendy1 --use-trendy05 \
+  --variable-list CNP_IO_default.txt
 ```
-- Requires dedicated CNP datasets (not included in this release) 
-- Trains the full CNP model on all available data and variables
-- For research, publications, and production use
-- Requires more memory and time
-- Support --help option
+- Uses production datasets (not included here) and full variable lists.
+- See `python train_cnp_model.py --help` for all options.
 
 ---
 
-## 🏗️ Model Modes
+## 🧠 Training defaults and controls
 
-### **Default Model (`train_model.py`)**
-- **Purpose:** Quick start, demonstration, and development
-- **Inputs:** Minimal set of variables (forcing, static, 1 PFT param, 1 1D PFT, 1 soil 2D)
-- **Data:** 3 mini files from data/example_dataset
-- **Speed:** Fast (minutes)
-- **Resources:** Low (can run on laptop or small GPU)
-
-### **CNP Model (`train_cnp_model.py`)**
-- **Purpose:** Full production/research model
-- **Inputs:** All available variables (forcing, static, 44 PFT params, 14 1D PFT, 28 soil 2D, etc.)
-- **Data:** All files from Trendy_1_data_CNP and Trendy_05_data_CNP
-- **Speed:** Slower (hours+)
-- **Resources:** High (requires large GPU/cluster)
+- Determinism: relaxed by default for performance. Enable strict determinism when needed:
+  - CLI: `--strict-determinism`
+- Mixed precision: enabled by default (AMP + grad scaler) when supported.
+- Outputs per run (under `--output-dir` with timestamped subfolders):
+  - `cnp_model.pt`, `cnp_training_losses.csv`, `cnp_predictions/` (including `predictions_scalar.csv`, `pft_1d_predictions/`, `soil_2d_predictions/`).
 
 ---
 
-## 🔑 Key Features
-- **Unified architecture:** LSTM, CNN, Transformer fusion (CNPCombinedModel)
-- **Flexible data pipeline:** Handles time series, static, 1D/2D/param groups
-- **Configurable:** All variables, paths, and training settings in `config/training_config.py`
-- **Clean logs:** Only essential INFO-level output for release
-- **No debug/NaN spam:** All debug and expensive NaN checks removed for performance
-- **Ready for research:** Full CNP model for publications and production
-- **Easy to extend:** Add new variables, datasets, or architectures as needed
+## 📊 Comparing runs
 
----
-
-## 📁 Directory Structure
+Use `scripts/compare_cnp_runs.py` to compare two runs (losses + predictions):
+```bash
+python scripts/compare_cnp_runs.py \
+  cnp_results/run_YYYYmmdd_HHMMSS \
+  cnp_results/run_YYYYmmdd_HHMMSS \
+  --out-dir compare_out \
+  --soil-layers 10 \
+  --pft-count 16 \
+  --plot-scalar  # use --no-plot-scalar to disable
 ```
-AI4BGC_pre_release/
-├── config/                # Configuration files (training, model, data)
-├── data/                  # Data loading and preprocessing
-├── models/                # Model architectures (CNP, enhanced, etc.)
-├── training/              # Training pipeline and utilities
-├── utils/                 # Utility functions (GPU monitoring, etc.)
-├── train_model.py         # Default (quick start) training script
-├── train_cnp_model.py     # Full CNP model training script
-├── requirements.txt       # Python dependencies
-└── README.md              # This file
-```.
+- Saves into `--out-dir`:
+  - `loss.png`
+  - `summary_stats.csv` (RMSE, Corr, means for all compared columns)
+  - Scatter plots:
+    - Soil 2D: first N layers per variable (default 10)
+    - PFT 1D: PFT1..PFTN per variable (default 16)
+    - Scalar: plotted only if `--plot-scalar` (on by default)
 
 ---
 
-## 🧪 Example Mini Dataset (Quick Testing)
+## 🔁 Updating restart files with AI predictions
 
-A minimal example dataset is available for fast testing and development:
+The `scripts/update_restart_with_ai.py` utilities can run inference or reuse an existing run to write predictions back into restart NetCDFs.
 
-- **Location:** `data/example_dataset/`
-- **Files:** `mini_data_1.pkl`, `mini_data_2.pkl`, `mini_data_3.pkl`
-- **Contents:** Only the variables used in the default model (see below)
+Examples:
+- Reuse an existing run’s predictions:
+```bash
+python scripts/update_restart_with_ai.py \
+  --run-dir cnp_results/run_YYYYmmdd_HHMMSS \
+  --input-nc path/to/input_restart.nc \
+  --output-nc path/to/output_restart_with_ai.nc \
+  --variable-list CNP_IO_default.txt
+```
+- Run inference first, then update restart:
+```bash
+python scripts/update_restart_with_aiprediction.py \
+  --model-path cnp_results/run_YYYYmmdd_HHMMSS/cnp_predictions/model.pth \
+  --data-paths /path/to/pkls1 /path/to/pkls2 \
+  --file-pattern '1_training_data_batch_*.pkl' \
+  --device cuda \
+  --out-dir cnp_infer \
+  --input-nc path/to/input_restart.nc \
+  --output-nc path/to/output_restart_with_aiprediction.nc \
+  --variable-list CNP_IO_default.txt
+```
 
-### Variables Included
-- **Time series (20 timesteps):** `FLDS`, `PSRF`, `FSDS`, `QBOT`, `PRECTmms`, `TBOT` 
-- **Static:** `Latitude`, `Longitude`
-- **PFT param:** `pft_leafcn`
-- **1D PFT:** `deadcrootc`, `Y_deadcrootc`
-- **Scalar:** `GPP`, `NPP`, `Y_GPP`, `Y_NPP`
-- **2D:** `soil1c_vr`, `Y_soil1c_vr`
+---
+
+## 🧪 NetCDF diff utility
+
+Compare two NetCDF files variable-by-variable with per-layer metrics:
+```bash
+python scripts/ncdiff2.py file1.nc file2.nc --save-diff-list diffs.csv
+```
+- Reports dtype/shape differences, NaN/mask counts, NRMSE, and per-layer summaries (treating the last axis as layers).
+
+---
+
+## 📁 Repository structure (abridged)
+```
+AI4BGC/
+├── config/                    # Training/data/model configs
+├── training/                  # Training loop and helpers
+├── models/                    # Model architectures
+├── data/                      # Data loading utilities
+├── scripts/                   # Analysis and utility scripts
+│   ├── compare_cnp_runs.py
+│   ├── compare_predictions.py
+│   ├── cnp_result_validationplot.py
+│   ├── update_restart_with_aiprediction.py
+│   └── ncdiff2.py
+├── train_model.py             # Quick-start training
+├── train_cnp_model.py         # Full CNP training
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## 📝 Release notes (v0.1)
+- Relaxed determinism by default; opt-in strict determinism via `--strict-determinism`.
+- `compare_cnp_runs.py`: consolidated outputs to `--out-dir`, plots for soil (N layers) and PFT (N PFTs), summary CSV, scalar plotting toggle.
+- Improved prediction I/O alignment and naming normalization for PFT columns.
+- Cleaned CLI ergonomics with sensible defaults.
 
 ---
 
 ## 🤝 Contributing
-We welcome feedback, bug reports, and contributions! Please open issues or pull requests as needed.
-
----
-
-**AI4BGC: Accelerating Earth System Science with Deep Learning** 
+Issues and PRs are welcome. Please include reproduction steps, logs, and environment details. 
