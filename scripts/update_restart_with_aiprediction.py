@@ -28,8 +28,11 @@ def run_inference(
     file_pattern: str,
     device: str,
     output_dir: Path,
+    inference_all: bool = False,
 ) -> Path:
-    """Run inference using the trained model on data from data_paths; returns predictions_dir."""
+    """Run inference using the trained model on data from data_paths; returns predictions_dir.
+    If inference_all is True, use the entire dataset (train_split=0.0) for evaluation output.
+    """
     config = get_cnp_combined_config(
         use_trendy1=True,
         use_trendy05=False,
@@ -38,7 +41,9 @@ def run_inference(
         variable_list_path=variable_list_path,
     )
     # Configure data and device
-    config.update_data_config(data_paths=data_paths, file_pattern=file_pattern, train_split=0.7)
+    # If inference_all, push all samples into the 'test' split so predictions cover the full dataset
+    split_ratio = 0.0 if inference_all else 0.7
+    config.update_data_config(data_paths=data_paths, file_pattern=file_pattern, train_split=split_ratio)
     config.update_training_config(device=device, predictions_dir=str(output_dir / "cnp_predictions"))
 
     # Load and preprocess data
@@ -58,7 +63,7 @@ def run_inference(
     state_dict = torch.load(model_path, map_location='cpu')
     model.load_state_dict(state_dict, strict=False)
 
-    # Evaluate and save predictions
+    # Evaluate and save predictions (uses test_data by design)
     trainer = ModelTrainer(config.training_config, model, train_data, test_data, scalers, data_info)
     predictions, metrics = trainer.evaluate()
     trainer.save_results(predictions, metrics)
@@ -264,14 +269,14 @@ def main():
             --input-nc original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc \
             --output-nc updated_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc
 
-          # Run inference with a trained model, then update restart file
+          # Run inference with a trained model on ALL data, then update restart file
           python scripts/update_restart_with_ai.py \
             --variable-list CNP_IO_list_general.txt \
             --model-path cnp_results/run_20250807_215454/cnp_predictions/model.pth \
-            --data-paths /mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_1_data_CNP \
+            --data-paths /path/to/Trendy_1_data_CNP \
             --file-pattern '1_training_data_batch_*.pkl' \
             --device cuda \
-            --input-nc original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc \
+            --inference-all \
             --output-nc updated_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc
         """
     )
@@ -290,7 +295,8 @@ def main():
     p.add_argument('--data-paths', nargs='*', help='Data directories containing PKL batches for inference')
     p.add_argument('--file-pattern', default='1_training_data_batch_*.pkl', help='Glob pattern for PKL files')
     p.add_argument('--device', default='cuda', choices=['cuda', 'cpu'], help='Device for inference')
-    p.add_argument('--out-dir', default='cnp_infer', help='Directory to store inference outputs if running inference')
+    p.add_argument('--out-dir', default=None, help='Directory to store inference outputs; if --inference-all and not set, defaults to {data_path_basename}_inference')
+    p.add_argument('--inference-all', action='store_true', help='Use the entire dataset for inference outputs (train_split=0.0)')
     p.add_argument('--examples', action='store_true', help='Show example usage and exit')
     args = p.parse_args()
 
@@ -306,7 +312,16 @@ def main():
         if not predictions_dir.exists():
             p.error(f'Predictions directory not found: {predictions_dir}')
     else:
-        out_dir = Path(args.out_dir)
+        # Determine output directory
+        if args.out_dir:
+            out_dir = Path(args.out_dir)
+        else:
+            # Default to {first_data_path_basename}_inference when inferring over all data; otherwise cnp_infer
+            if args.inference_all and args.data_paths:
+                base_name = Path(args.data_paths[0]).name
+                out_dir = Path(f"{base_name}_inference")
+            else:
+                out_dir = Path('cnp_infer')
         out_dir.mkdir(parents=True, exist_ok=True)
         predictions_dir = run_inference(
             variable_list_path=args.variable_list,
@@ -315,6 +330,7 @@ def main():
             file_pattern=args.file_pattern,
             device=args.device,
             output_dir=out_dir,
+            inference_all=bool(args.inference_all),
         )
 
     preds = load_predictions(predictions_dir)
