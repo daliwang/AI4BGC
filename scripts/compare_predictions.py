@@ -282,7 +282,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=build_examples_epilog()
     )
-    parser.add_argument('--kind', required=True, choices=['scalar', 'pft1d', 'soil2d'])
+    # Make --kind optional; when omitted, all kinds will be processed
+    parser.add_argument('--kind', choices=['scalar', 'pft1d', 'soil2d'], help='Which kind to compare. If omitted, runs all kinds: scalar, pft1d, soil2d')
     parser.add_argument('--run-a', required=True, help='Path to first run directory (cnp_results/run_...)')
     parser.add_argument('--run-b', help='Path to second run directory (for between-run comparison)')
     parser.add_argument('--against-gt', action='store_true', help='Compare run-a predictions against ground truth')
@@ -299,7 +300,27 @@ def main():
     if args.against_gt and args.run_b:
         print('[WARN] --against-gt ignores --run-b; comparing run-a vs GT only', file=sys.stderr)
 
-    if args.kind == 'scalar':
+    # If no kind is specified, run for all kinds
+    if args.kind is None:
+        kinds = ['scalar', 'pft1d', 'soil2d']
+        if not args.against_gt and not args.run_b:
+            raise ValueError('Provide --run-b or --against-gt when --kind is omitted (all kinds)')
+        for k in kinds:
+            if args.against_gt:
+                if k == 'scalar':
+                    compare_scalar_vs_gt(args.run_a, os.path.join(args.out, 'scalar_vs_gt'))
+                elif k == 'pft1d':
+                    compare_pft1d_vs_gt(args.run_a, os.path.join(args.out, 'pft1d_vs_gt'))
+                elif k == 'soil2d':
+                    compare_soil2d_vs_gt(args.run_a, os.path.join(args.out, 'soil2d_vs_gt'))
+            else:
+                if k == 'scalar':
+                    compare_scalar_runs(args.run_a, args.run_b, os.path.join(args.out, 'scalar_runs'))
+                elif k == 'pft1d':
+                    compare_pft1d_runs(args.run_a, args.run_b, os.path.join(args.out, 'pft1d_runs'))
+                elif k == 'soil2d':
+                    compare_soil2d_runs(args.run_a, args.run_b, os.path.join(args.out, 'soil2d_runs'))
+    elif args.kind == 'scalar':
         if args.against_gt:
             compare_scalar_vs_gt(args.run_a, os.path.join(args.out, 'scalar_vs_gt'))
         elif args.run_b:

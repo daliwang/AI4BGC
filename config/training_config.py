@@ -458,8 +458,8 @@ def get_cnp_combined_config(
     data_paths = []
     file_patterns = []
     if use_trendy1:
-        data_paths.append("/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_1_data_CNP")
-        file_patterns.append("1_training_data_batch_*.pkl")
+        data_paths.append("/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_1_data_CNP/enhanced_dataset")
+        file_patterns.append("enhanced_1_training_data_batch_*.pkl")
     if use_trendy05:
         data_paths.append("/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_05_data_CNP")
         file_patterns.append("1_training_data_batch_*.pkl")

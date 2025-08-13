@@ -151,6 +151,6 @@ if __name__ == '__main__':
         else:
             print("test_metrics.csv not found.")
     if len(sys.argv) < 2:
-        print("Usage: python postprocess_result.py <results_dir> [--no-plot-loss]")
+        print("Usage: python cnp_result_validationplot.py <results_dir> [--no-plot-loss]")
     else:
         main_with_flag(args.results_dir, args.plot_loss)

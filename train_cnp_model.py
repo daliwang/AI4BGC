@@ -145,7 +145,7 @@ def main():
         '--variable-list',
         type=str,
         default=None,
-        help='Path to variable list file (e.g., CNP_IO_list_general.txt) for dynamic configuration'
+        help='Path to variable list file (e.g., CNP_IO_list_default.txt) for dynamic configuration'
     )
     
     args = parser.parse_args()

@@ -293,7 +293,7 @@ def main():
     p.add_argument('--run-dir', help='Existing run directory containing cnp_predictions to use directly')
     p.add_argument('--model-path', help='Path to trained model state_dict (model.pth) for inference')
     p.add_argument('--data-paths', nargs='*', help='Data directories containing PKL batches for inference')
-    p.add_argument('--file-pattern', default='1_training_data_batch_*.pkl', help='Glob pattern for PKL files')
+    p.add_argument('--file-pattern', default='*1_training_data_batch_*.pkl', help='Glob pattern for PKL files')
     p.add_argument('--device', default='cuda', choices=['cuda', 'cpu'], help='Device for inference')
     p.add_argument('--out-dir', default=None, help='Directory to store inference outputs; if --inference-all and not set, defaults to {data_path_basename}_inference')
     p.add_argument('--inference-all', action='store_true', help='Use the entire dataset for inference outputs (train_split=0.0)')
