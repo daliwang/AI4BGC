@@ -7,17 +7,20 @@ import cartopy.feature as cfeature
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import TwoSlopeNorm, ListedColormap, BoundaryNorm
 
-VARIABLES = ['labilep_vr', 'primp_vr', 'deadstemc', 'tlai'] # variables 
+#VARIABLES = ['cwdc_vr', 'cwdn_vr', 'cwdp_vr', 'tlai'] # variables 
+VARIABLES = ['cwdc_vr','tlai']
 LEVGRND_LAYERS = [0, 5, 9] # layers for (column, levgrnd)-type variables (0,9)
 PFT_PICK_LIST = [2,3,4, 5, 6] # which PFT(s) to plot per gridcell   (1,16)
+
+DATA_DIR = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/'  # for ccsi_gpu_node1
 
 #FILE_NEW = '/home/UNT/dg0997/all_gdw/0_oak_weather/dataset/ornl_data_700/output/20250117_trendytest_ICB1850CNPRDCTCBC.elm.r.0781-01-01-00000.nc'
 #FILE_OLD = '/home/UNT/dg0997/all_gdw/0_oak_weather/26_automatical_dataset_train_restart/auto_dataset_training_restart/backup/results/enhanced_restart.nc'
 
-FILE_OLD = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/original_780_spinup_from_modelsimulation.nc'
+FILE_OLD = DATA_DIR+ 'original_780_spinup_from_modelsimulation.nc'
 #FILE_OLD = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc'
 #FILE_NEW = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/cnp_results/run_20250812_172831/restart_file_CNP_IO_updated13_20250812_172831_updated.nc'
-FILE_NEW = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/updated13_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc'
+FILE_NEW = './restart_file_CNP_IO_updated13_20250812_172831_updated.nc'
 
 LABEL_NEW = "AI results"
 LABEL_OLD = "780 year"

@@ -42,7 +42,7 @@ def run_inference(
     )
     # Configure data and device
     # If inference_all, push all samples into the 'test' split so predictions cover the full dataset
-    split_ratio = 0.0 if inference_all else 0.7
+    split_ratio = 0.0 if inference_all else 0.7  
     config.update_data_config(data_paths=data_paths, file_pattern=file_pattern, train_split=split_ratio)
     config.update_training_config(device=device, predictions_dir=str(output_dir / "cnp_predictions"))
 
@@ -263,18 +263,18 @@ def main():
         """
         Examples:
           # Reuse predictions from an existing run directory to update restart file
-          python scripts/update_restart_with_ai.py \
+          python scripts/update_restart_with_aiprediction.py \
             --variable-list CNP_IO_list_general.txt \
             --run-dir cnp_results/run_20250807_215454 \
             --input-nc original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc \
             --output-nc updated_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc
 
           # Run inference with a trained model on ALL data, then update restart file
-          python scripts/update_restart_with_ai.py \
+          python scripts/update_restart_with_aipred.py \
             --variable-list CNP_IO_list_general.txt \
             --model-path cnp_results/run_20250807_215454/cnp_predictions/model.pth \
-            --data-paths /path/to/Trendy_1_data_CNP \
-            --file-pattern '1_training_data_batch_*.pkl' \
+            --data-paths /path/to/Trendy_1_data_CNP/enhanced_dataset \
+            --file-pattern '*1_training_data_batch_*.pkl' \
             --device cuda \
             --inference-all \
             --output-nc updated_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc
