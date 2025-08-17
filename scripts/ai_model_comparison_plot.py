@@ -28,13 +28,61 @@ VARIABLES = ['cwdc_vr', 'tlai']  # Fallback variables if no variable list provid
 LEVGRND_LAYERS = [0, 4, 9]  # Layers 0, 4, 9 (corresponding to AI layers 1, 5, 10)
 
 # PFTs to plot (AI has PFT1-16, model has PFT0-16)
-PFT_PICK_LIST = [1, 2, 3, 4, 5]  # PFT1, PFT2, PFT3, PFT4, PFT5
+# Note: AI PFT0 = Model PFT1, AI PFT1 = Model PFT2, etc.
+PFT_PICK_LIST = [0, 1, 2, 3, 4, 5]  # PFT1, PFT2, PFT3, PFT4, PFT5 (0-indexed, so 0=PFT1, 1=PFT2, etc.)
 
 def _safe_get(ds, name):
     """Safely get a variable from dataset, with error handling."""
     if name not in ds:
         raise KeyError(f"Missing required variable/coordinate: {name}")
     return ds[name]
+
+def _to_zero_based_index(idx_raw, n_grid):
+    """Convert gridcell indices to zero-based indexing."""
+    idx = np.asarray(idx_raw, dtype=np.int64).copy()
+    if idx.size == 0:
+        return np.full_like(idx, -1)
+    is_one_based = (np.any(idx == n_grid) or (np.nanmin(idx) == 1))
+    if is_one_based:
+        idx = idx - 1
+    idx[(idx < 0) | (idx >= n_grid)] = -1
+    return idx
+
+def _build_gridcell_groups(one_d_to_grid, n_grid):
+    """Build groups of indices for each gridcell."""
+    groups = [[] for _ in range(n_grid)]
+    for idx, g in enumerate(one_d_to_grid):
+        if 0 <= g < n_grid:
+            groups[g].append(idx)
+    return groups
+
+def _create_ai_to_model_mapping(ds_ai, ds_model, n_grid):
+    """Create spatial mapping from AI gridcells to model gridcells."""
+    from scipy.spatial.distance import cdist
+    
+    # Get AI coordinates
+    ai_lon = ds_ai['grid1d_lon'].values
+    ai_lat = ds_ai['grid1d_lat'].values
+    
+    # Get model coordinates (already extracted as grid_lon, grid_lat)
+    model_lon = ds_model['grid1d_lon'].values
+    model_lat = ds_model['grid1d_lat'].values
+    
+    # Create coordinate arrays
+    ai_coords = np.column_stack([ai_lon, ai_lat])
+    model_coords = np.column_stack([model_lon, model_lat])
+    
+    # Find closest model gridcell for each AI gridcell
+    distances = cdist(ai_coords, model_coords)
+    ai_to_model_mapping = np.argmin(distances, axis=1)
+    
+    print(f"Created AI-to-model spatial mapping:")
+    print(f"  AI gridcells: {len(ai_lon)}")
+    print(f"  Model gridcells: {len(model_lon)}")
+    print(f"  Mapping range: AI gridcell 0->model gridcell {ai_to_model_mapping[0]}")
+    print(f"  Mapping range: AI gridcell {len(ai_lon)-1}->model gridcell {ai_to_model_mapping[-1]}")
+    
+    return ai_to_model_mapping
 
 def _to_nan_fillvalue(arr, fill_threshold=1e35):
     """Convert fill values to NaN."""
@@ -375,19 +423,25 @@ Examples:
                 print("Warning: No common variables found between AI predictions and model!")
                 return
     
-    # Get grid information from the model file since that's where the variable data comes from
-    # This ensures the column/PFT indices match the variable data dimensions
+    # Get grid information from the MODEL file as the master coordinate system
+    # This ensures AI predictions can be properly ingested into the model
     grid_lon, grid_lat = _gridcell_lonlat(ds_model)
     n_grid = ds_model.sizes["gridcell"]
     
-    # Build mappings from the model file
+    print(f"Using MODEL gridcell count: {n_grid}")
+    print(f"Model coordinates: lon range [{grid_lon.min():.3f}, {grid_lon.max():.3f}], lat range [{grid_lat.min():.3f}, {grid_lat.max():.3f}]")
+    
+    # Build mappings from the model file for extracting model data
     col2grid = _to_zero_based_index(_safe_get(ds_model, "cols1d_gridcell_index").values, n_grid)
     pft2grid = _to_zero_based_index(_safe_get(ds_model, "pfts1d_gridcell_index").values, n_grid)
     
     grid_to_cols = _build_gridcell_groups(col2grid, n_grid)
     grid_to_pfts = _build_gridcell_groups(pft2grid, n_grid)
     
-    print(f"Total gridcells: {n_grid} | total columns: {col2grid.size} | total pfts: {pft2grid.size}")
+    # Create spatial mapping from AI gridcells to model gridcells
+    ai_to_model_mapping = _create_ai_to_model_mapping(ds_ai, ds_model, n_grid)
+    
+    print(f"Model mappings: total columns: {col2grid.size} | total pfts: {pft2grid.size}")
     print(f"Example: gridcell 0 -> columns {grid_to_cols[0][:5]}, pfts {grid_to_pfts[0][:5]}")
     
     # Create output directory
@@ -453,15 +507,21 @@ Examples:
                     if len(cols) == 0:
                         continue
                     
-                    # For AI data: since it only has 1 column, use column 0 for all gridcells
-                    # The AI data represents the entire grid with a single column
-                    ai_col_idx = 0
-                    
-                    # Handle AI data indexing - shape is (column, levgrnd, gridcell)
-                    if vals_ai.ndim == 3:
-                        ai_grid[g] = vals_ai[ai_col_idx, lev, g]
+                    # For AI data: map from model gridcell g to corresponding AI gridcell
+                    # Use spatial mapping to find the AI gridcell that corresponds to this model gridcell
+                    ai_gridcell_idx = np.where(ai_to_model_mapping == g)[0]
+                    if len(ai_gridcell_idx) > 0:
+                        ai_gridcell_idx = ai_gridcell_idx[0]  # Take the first match
+                        ai_col_idx = 0
+                        
+                        # Handle AI data indexing - shape is (column, levgrnd, gridcell)
+                        if vals_ai.ndim == 3:
+                            ai_grid[g] = vals_ai[ai_col_idx, lev, ai_gridcell_idx]
+                        else:
+                            ai_grid[g] = vals_ai[ai_col_idx, lev]
                     else:
-                        ai_grid[g] = vals_ai[ai_col_idx, lev]
+                        # No AI gridcell maps to this model gridcell
+                        ai_grid[g] = np.nan
                     
                     # For model: use the first column of this gridcell
                     # The model has 253,641 columns, each corresponding to a specific location
@@ -500,27 +560,38 @@ Examples:
                 ai_grid = np.full(n_grid, np.nan, dtype=float)
                 model_grid = np.full(n_grid, np.nan, dtype=float)
 
-                for g in range(n_grid):
-                    pfts = grid_to_pfts[g]
-                    if len(pfts) == 0:
-                        continue
-                    if k < len(pfts):
-                        p_idx = pfts[k]
-                        
-                        # Handle AI data indexing - shape might be (pft, gridcell) or (pft,)
-                        if vals_ai.ndim == 2:
-                            ai_grid[g] = vals_ai[k, g]
-                        else:
+                # Handle AI data indexing - map PFT k data to model gridcell positions
+                # Use spatial mapping to find the AI gridcell that corresponds to each model gridcell
+                ai_grid = np.full(n_grid, np.nan, dtype=float)
+                
+                if vals_ai.ndim == 2:
+                    # For each model gridcell, find the corresponding AI gridcell and extract PFT k data
+                    for g in range(n_grid):
+                        ai_gridcell_idx = np.where(ai_to_model_mapping == g)[0]
+                        if len(ai_gridcell_idx) > 0:
+                            ai_gridcell_idx = ai_gridcell_idx[0]  # Take the first match
+                            ai_grid[g] = vals_ai[k, ai_gridcell_idx]
+                else:
+                    # Single value for PFT k - apply to all gridcells that have AI data
+                    for g in range(n_grid):
+                        ai_gridcell_idx = np.where(ai_to_model_mapping == g)[0]
+                        if len(ai_gridcell_idx) > 0:
                             ai_grid[g] = vals_ai[k]
-                        
-                        # For model, use the same PFT index (k) as in restart_variable_plot.py
-                        # The model data structure is (pft,) where PFT indices correspond to the same physical location
-                        if k < vals_model.shape[0]:
-                            # Handle model data indexing
-                            if vals_model.ndim == 2:
-                                model_grid[g] = vals_model[k, g]
-                            else:
-                                model_grid[g] = vals_model[k]
+                
+                # Handle model data indexing - need to find PFT instances in each gridcell
+                # The model has many PFTs per gridcell, we want the first 16 (indices 0-15)
+                # AI PFT0 corresponds to Model PFT1, AI PFT1 corresponds to Model PFT2, etc.
+                for g in range(n_grid):
+                    if g < len(grid_to_pfts) and len(grid_to_pfts[g]) > 0:
+                        # Get the first 16 PFTs in this gridcell
+                        gridcell_pfts = grid_to_pfts[g][:16]  # First 16 PFTs
+                        # Adjust index: AI PFT k corresponds to Model PFT (k+1) in the first 16
+                        adjusted_k = k + 1  # AI PFT0 -> Model PFT1, AI PFT1 -> Model PFT2
+                        if adjusted_k < len(gridcell_pfts):
+                            # Use adjusted PFT index from the first 16 PFTs in this gridcell
+                            model_pft_idx = gridcell_pfts[adjusted_k]
+                            if model_pft_idx < vals_model.shape[0]:
+                                model_grid[g] = vals_model[model_pft_idx]
 
                 _plot_tripanel(var, f"_pft{k+1}", grid_lon, grid_lat, ai_grid, model_grid, args.output_dir,
                                label_ai="AI Predictions", label_model="Model Results")
@@ -539,19 +610,32 @@ Examples:
             vals_ai = _to_nan_fillvalue(da_ai_gc.values)
             vals_model = _to_nan_fillvalue(da_model_gc.values)
             
-            # Ensure we have the same number of gridcells
-            n_ai = len(vals_ai)
-            n_model = len(vals_model)
+            # Map AI data to model gridcell positions using spatial mapping
+            ai_grid = np.full(n_grid, np.nan, dtype=float)
             
-            if n_ai != n_model:
-                print(f"  Warning: Gridcell count mismatch - AI: {n_ai}, Model: {n_model}")
-                n_compare = min(n_ai, n_model)
-                vals_ai = vals_ai[:n_compare]
-                vals_model = vals_model[:n_compare]
-                grid_lon = grid_lon[:n_compare]
-                grid_lat = grid_lat[:n_compare]
+            if vals_ai.ndim == 1:
+                # For each model gridcell, find the corresponding AI gridcell and extract data
+                for g in range(n_grid):
+                    ai_gridcell_idx = np.where(ai_to_model_mapping == g)[0]
+                    if len(ai_gridcell_idx) > 0:
+                        ai_gridcell_idx = ai_gridcell_idx[0]  # Take the first match
+                        ai_grid[g] = vals_ai[ai_gridcell_idx]
+            else:
+                # Handle multi-dimensional AI data
+                for g in range(n_grid):
+                    ai_gridcell_idx = np.where(ai_to_model_mapping == g)[0]
+                    if len(ai_gridcell_idx) > 0:
+                        ai_gridcell_idx = ai_gridcell_idx[0]  # Take the first match
+                        # Extract data for this gridcell (handle different dimension orders)
+                        if vals_ai.ndim == 2:
+                            ai_grid[g] = vals_ai[0, ai_gridcell_idx]  # Assume first dimension is not gridcell
+                        else:
+                            ai_grid[g] = vals_ai[ai_gridcell_idx]
             
-            _plot_tripanel(var, "", grid_lon, grid_lat, vals_ai, vals_model, args.output_dir,
+            # Model data is already in the correct gridcell order
+            model_grid = vals_model
+            
+            _plot_tripanel(var, "", grid_lon, grid_lat, ai_grid, model_grid, args.output_dir,
                            label_ai="AI Predictions", label_model="Model Results")
 
         else:

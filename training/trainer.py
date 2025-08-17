@@ -21,6 +21,8 @@ import warnings
 from torch.utils.data import TensorDataset, DataLoader
 import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score
+import pickle
+import json
 
 # from config.training_config import TrainingConfig  # Uncomment if TrainingConfig is defined
 from models.combined_model import CombinedModel, FlexibleCombinedModel
@@ -1025,6 +1027,9 @@ class ModelTrainer:
         # Save predictions
         self._save_predictions(predictions, predictions_dir)
         
+        # Save scalers for future inverse transformation
+        self._save_scalers(predictions_dir)
+        
         # Save model
         model_path = predictions_dir / "model.pth"
         torch.save(self.model.state_dict(), model_path)
@@ -1062,15 +1067,42 @@ class ModelTrainer:
             else:
                 logger.info(f"  {key}: {type(tensor)}")
 
-        # Save scalar predictions (renamed to predictions_scalar.csv)
+        # Save scalar predictions with inverse transformation
         predictions_scalar_np = predictions['scalar'].cpu().numpy()
         scalar_cols = self.data_info['y_list_scalar_columns'][:predictions_scalar_np.shape[1]]
-        predictions_df = pd.DataFrame(predictions_scalar_np, columns=scalar_cols)
+        
+        # Apply inverse transformation to convert from normalized to original units
+        try:
+            if 'y_scalar' in self.scalers and self.scalers['y_scalar'] is not None:
+                predictions_scalar_original = self.scalers['y_scalar'].inverse_transform(predictions_scalar_np)
+                logger.info("Applied inverse transformation to scalar predictions")
+            else:
+                predictions_scalar_original = predictions_scalar_np
+                logger.warning("No scalar scaler found, saving normalized values")
+        except Exception as e:
+            logger.warning(f"Failed to apply inverse transformation to scalar predictions: {e}")
+            predictions_scalar_original = predictions_scalar_np
+        
+        predictions_df = pd.DataFrame(predictions_scalar_original, columns=scalar_cols)
         predictions_df.to_csv(os.path.join(predictions_dir, 'predictions_scalar.csv'), index=False)
-        # Save ground truth scalar if available
+        
+        # Save ground truth scalar with inverse transformation if available
         if 'y_scalar' in self.test_data:
             ground_truth_scalar_np = self.test_data['y_scalar'].cpu().numpy()
-            ground_truth_scalar_df = pd.DataFrame(ground_truth_scalar_np, columns=scalar_cols)
+            
+            # Apply inverse transformation to ground truth as well
+            try:
+                if 'y_scalar' in self.scalers and self.scalers['y_scalar'] is not None:
+                    ground_truth_scalar_original = self.scalers['y_scalar'].inverse_transform(ground_truth_scalar_np)
+                    logger.info("Applied inverse transformation to scalar ground truth")
+                else:
+                    ground_truth_scalar_original = ground_truth_scalar_np
+                    logger.warning("No scalar scaler found, saving normalized ground truth values")
+            except Exception as e:
+                logger.warning(f"Failed to apply inverse transformation to scalar ground truth: {e}")
+                ground_truth_scalar_original = ground_truth_scalar_np
+            
+            ground_truth_scalar_df = pd.DataFrame(ground_truth_scalar_original, columns=scalar_cols)
             ground_truth_scalar_df.to_csv(os.path.join(predictions_dir, 'ground_truth_scalar.csv'), index=False)
 
         # Save pft_1d predictions if available
@@ -1093,8 +1125,25 @@ class ModelTrainer:
             for v in range(num_variables):
                 var_name = var_names[v]
                 var_predictions = predictions_pft_1d_np[:, v, :]
+                
+                # Apply inverse transformation to convert from normalized to original units
+                try:
+                    if 'y_pft_1d' in self.scalers and self.scalers['y_pft_1d'] is not None:
+                        # Reshape to 2D for scaler (samples, features)
+                        var_predictions_2d = var_predictions.reshape(n_samples, -1)
+                        var_predictions_original = self.scalers['y_pft_1d'].inverse_transform(var_predictions_2d)
+                        # Reshape back to (samples, pfts)
+                        var_predictions_original = var_predictions_original.reshape(n_samples, num_pfts)
+                        logger.info(f"Applied inverse transformation to PFT 1D predictions for {var_name}")
+                    else:
+                        var_predictions_original = var_predictions
+                        logger.warning(f"No PFT 1D scaler found for {var_name}, saving normalized values")
+                except Exception as e:
+                    logger.warning(f"Failed to apply inverse transformation to PFT 1D predictions for {var_name}: {e}")
+                    var_predictions_original = var_predictions
+                
                 columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
-                var_df = pd.DataFrame(var_predictions, columns=columns)
+                var_df = pd.DataFrame(var_predictions_original, columns=columns)
                 var_df.to_csv(os.path.join(pft_1d_dir, f'predictions_{var_name}.csv'), index=False)
             # Save ground truth if available
             if 'y_pft_1d' in self.test_data:
@@ -1106,8 +1155,25 @@ class ModelTrainer:
                 for v in range(num_variables):
                     var_name = var_names[v]
                     var_gt = ground_truth_pft_1d_np[:, v, :]
+                    
+                    # Apply inverse transformation to ground truth as well
+                    try:
+                        if 'y_pft_1d' in self.scalers and self.scalers['y_pft_1d'] is not None:
+                            # Reshape to 2D for scaler (samples, features)
+                            var_gt_2d = var_gt.reshape(n_samples, -1)
+                            var_gt_original = self.scalers['y_pft_1d'].inverse_transform(var_gt_2d)
+                            # Reshape back to (samples, pfts)
+                            var_gt_original = var_gt_original.reshape(n_samples, num_pfts)
+                            logger.info(f"Applied inverse transformation to PFT 1D ground truth for {var_name}")
+                        else:
+                            var_gt_original = var_gt
+                            logger.warning(f"No PFT 1D scaler found for {var_name}, saving normalized ground truth values")
+                    except Exception as e:
+                        logger.warning(f"Failed to apply inverse transformation to PFT 1D ground truth for {var_name}: {e}")
+                        var_gt_original = var_gt
+                    
                     columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
-                    var_gt_df = pd.DataFrame(var_gt, columns=columns)
+                    var_gt_df = pd.DataFrame(var_gt_original, columns=columns)
                     var_gt_df.to_csv(os.path.join(pft_1d_gt_dir, f'ground_truth_{var_name}.csv'), index=False)
             logger.info("pft_1d predictions and ground truth saved separately for each variable and PFT")
 
@@ -1155,8 +1221,36 @@ class ModelTrainer:
             for v in range(num_variables):
                 var_name = var_names[v]
                 var_predictions = predictions_soil_2d_np[:, v, :, :]
+                
+                # Apply inverse transformation to convert from normalized to original units
+                try:
+                    if 'y_soil_2d' in self.scalers and self.scalers['y_soil_2d'] is not None:
+                        # IMPORTANT: The scaler expects the FULL soil 2D data (all variables concatenated)
+                        # We need to reconstruct the full tensor before applying inverse transformation
+                        # Create a temporary tensor with all variables for this sample
+                        temp_full_tensor = np.zeros((n_samples, 3, num_columns, num_layers))  # 3 = number of soil variables
+                        temp_full_tensor[:, v, :, :] = var_predictions  # Insert current variable
+                        
+                        # Reshape to 2D for scaler (samples, features) - should be (n_samples, 3*num_columns*num_layers)
+                        temp_full_2d = temp_full_tensor.reshape(n_samples, -1)
+                        
+                        # Apply inverse transformation
+                        temp_full_original = self.scalers['y_soil_2d'].inverse_transform(temp_full_2d)
+                        
+                        # Reshape back to 4D and extract the current variable
+                        temp_full_original_4d = temp_full_original.reshape(n_samples, 3, num_columns, num_layers)
+                        var_predictions_original = temp_full_original_4d[:, v, :, :]
+                        
+                        logger.info(f"Applied inverse transformation to soil 2D predictions for {var_name}")
+                    else:
+                        var_predictions_original = var_predictions
+                        logger.warning(f"No soil 2D scaler found for {var_name}, saving normalized values")
+                except Exception as e:
+                    logger.warning(f"Failed to apply inverse transformation to soil 2D predictions for {var_name}: {e}")
+                    var_predictions_original = var_predictions
+                
                 # Reshape to 2D for CSV (samples, columns*layers)
-                var_predictions_2d = var_predictions.reshape(n_samples, num_columns * num_layers)
+                var_predictions_2d = var_predictions_original.reshape(n_samples, num_columns * num_layers)
                 columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
                 var_df = pd.DataFrame(var_predictions_2d, columns=columns)
                 var_df.to_csv(os.path.join(soil_2d_dir, f'predictions_{var_name}.csv'), index=False)
@@ -1187,13 +1281,86 @@ class ModelTrainer:
                 for v in range(num_variables):
                     var_name = var_names[v]
                     var_gt = ground_truth_soil_2d_np[:, v, :, :]
-                    var_gt_2d = var_gt.reshape(n_samples, num_columns * num_layers)
+                    
+                    # Apply inverse transformation to ground truth as well
+                    try:
+                        if 'y_soil_2d' in self.scalers and self.scalers['y_soil_2d'] is not None:
+                            # IMPORTANT: The scaler expects the FULL soil 2D data (all variables concatenated)
+                            # We need to reconstruct the full tensor before applying inverse transformation
+                            # Create a temporary tensor with all variables for this sample
+                            temp_full_tensor = np.zeros((n_samples, 3, num_columns, num_layers))  # 3 = number of soil variables
+                            temp_full_tensor[:, v, :, :] = var_gt  # Insert current variable
+                            
+                            # Reshape to 2D for scaler (samples, features) - should be (n_samples, 3*num_columns*num_layers)
+                            temp_full_2d = temp_full_tensor.reshape(n_samples, -1)
+                            
+                            # Apply inverse transformation
+                            temp_full_original = self.scalers['y_soil_2d'].inverse_transform(temp_full_2d)
+                            
+                            # Reshape back to 4D and extract the current variable
+                            temp_full_original_4d = temp_full_original.reshape(n_samples, 3, num_columns, num_layers)
+                            var_gt_original = temp_full_original_4d[:, v, :, :]
+                            
+                            logger.info(f"Applied inverse transformation to soil 2D ground truth for {var_name}")
+                        else:
+                            var_gt_original = var_gt
+                            logger.warning(f"No soil 2D scaler found for {var_name}, saving normalized ground truth values")
+                    except Exception as e:
+                        logger.warning(f"Failed to apply inverse transformation to soil 2D ground truth for {var_name}: {e}")
+                        var_gt_original = var_gt
+                    
+                    var_gt_2d = var_gt_original.reshape(n_samples, num_columns * num_layers)
                     columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
                     var_gt_df = pd.DataFrame(var_gt_2d, columns=columns)
                     var_gt_df.to_csv(os.path.join(soil_2d_gt_dir, f'ground_truth_{var_name}.csv'), index=False)
             logger.info("soil_2d predictions and ground truth saved separately for each variable, column, and layer")
 
         logger.info("All predictions saved successfully")
+    
+    def _save_scalers(self, predictions_dir: Path):
+        """Save scalers to disk for future inverse transformation."""
+        
+        try:
+            scalers_dir = predictions_dir / "scalers"
+            scalers_dir.mkdir(exist_ok=True)
+            
+            for scaler_name, scaler in self.scalers.items():
+                if scaler is not None:
+                    scaler_file = scalers_dir / f"{scaler_name}_scaler.pkl"
+                    with open(scaler_file, 'wb') as f:
+                        pickle.dump(scaler, f)
+                    logger.info(f"Saved {scaler_name} scaler to {scaler_file}")
+            
+            # Save scaler metadata
+            scaler_info = {}
+            for scaler_name, scaler in self.scalers.items():
+                if scaler is not None:
+                    if hasattr(scaler, 'scale_') and hasattr(scaler, 'mean_'):
+                        # StandardScaler or RobustScaler
+                        scaler_info[scaler_name] = {
+                            'type': type(scaler).__name__,
+                            'scale_': scaler.scale_.tolist() if hasattr(scaler, 'scale_') else None,
+                            'mean_': scaler.mean_.tolist() if hasattr(scaler, 'mean_') else None,
+                            'var_': scaler.var_.tolist() if hasattr(scaler, 'var_') else None
+                        }
+                    elif hasattr(scaler, 'scale_') and hasattr(scaler, 'min_'):
+                        # MinMaxScaler
+                        scaler_info[scaler_name] = {
+                            'type': type(scaler).__name__,
+                            'scale_': scaler.scale_.tolist(),
+                            'min_': scaler.min_.tolist(),
+                            'data_min_': scaler.data_min_.tolist(),
+                            'data_max_': scaler.data_max_.tolist()
+                        }
+            
+            metadata_file = scalers_dir / "scaler_metadata.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(scaler_info, f, indent=2)
+            
+            logger.info(f"Scalers saved to {scalers_dir}")
+            
+        except Exception as e:
+            logger.warning(f"Could not save scalers: {e}")
     
     def plot_training_curves(self, save_path: str = "training_curves.png"):
         """Plot training and validation loss curves."""

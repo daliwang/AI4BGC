@@ -147,6 +147,12 @@ def main():
         default=None,
         help='Path to variable list file (e.g., CNP_IO_list_default.txt) for dynamic configuration'
     )
+    parser.add_argument(
+        '--max-files',
+        type=int,
+        default=None,
+        help='Maximum number of files to load for testing (default: all files)'
+    )
     
     args = parser.parse_args()
     
@@ -177,7 +183,7 @@ def main():
             config = get_cnp_combined_config(
                 use_trendy1=args.use_trendy1,
                 use_trendy05=args.use_trendy05,
-                max_files=None,  # You can add a CLI arg for this if needed
+                max_files=args.max_files,  # You can add a CLI arg for this if needed
                 include_water=include_water,
                 variable_list_path=args.variable_list
             )
@@ -194,7 +200,7 @@ def main():
         config.update_data_config(train_split=0.7)
         # Ensure GPU and all files
         config.update_training_config(device='cuda')
-        config.update_data_config(max_files=None)
+        config.update_data_config(max_files=args.max_files)
         # Turn off GPU monitoring and debug logging
         config.update_training_config(log_gpu_memory=False, log_gpu_utilization=False)
         # Override training parameters if specified

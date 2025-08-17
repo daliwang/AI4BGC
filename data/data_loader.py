@@ -93,6 +93,12 @@ class DataLoader:
             # Optional cap on number of files
             num_files = len(files)
             logger.info(f"Found {num_files} files in {path}")
+            
+            # Apply max_files limit if specified
+            if hasattr(self.data_config, 'max_files') and self.data_config.max_files is not None:
+                files = files[:self.data_config.max_files]
+                logger.info(f"Limited to {len(files)} files due to max_files={self.data_config.max_files}")
+            
             # Log a short hash of the ordered file list for reproducibility checks
             try:
                 concat_names = ''.join([p.name for p in files])
