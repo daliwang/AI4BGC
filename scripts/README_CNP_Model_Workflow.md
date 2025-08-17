@@ -18,10 +18,10 @@ This document describes the complete workflow for training, validating, and comp
 
 ## Workflow Overview
 
-The CNP model workflow consists of six main stages:
+The CNP model workflow consists of eight main stages:
 
 ```
-1. Configuration → 2. Training → 3. Validation → 4. Inference → 5. NetCDF Export → 6. Model Comparison
+1. Configuration → 2. Training → 3. Validation → 4. Inference → 5. NetCDF Export → 6. Model Comparison → 7. Restart File Ingestion → 8. Restart File Verification
 ```
 
 **Stage 1**: Create variable list configuration (`CNP_IO_demo1.txt`)
@@ -30,6 +30,8 @@ The CNP model workflow consists of six main stages:
 **Stage 4**: Run inference on entire dataset
 **Stage 5**: Export AI predictions to NetCDF format
 **Stage 6**: Compare AI predictions with ELM model results
+**Stage 7**: Ingest AI predictions into model restart file  
+**Stage 8**: Verify and compare AI-enhanced restart file with original
 
 ## File Structure
 
@@ -72,6 +74,11 @@ cnp_results/run_YYYYMMDD_HHMMSS/
 │       ├── cwdc_vr_lev0.png      # Soil variable plots
 │       ├── cwdc_vr_lev4.png
 │       └── cwdc_vr_lev9.png
+├── updated_restart_CNP_IO_*.nc    # AI-enhanced restart files
+├── ai_restart_comparison_plots/   # Restart file verification plots
+│   ├── tlai_pft1.png              # PFT comparison plots
+│   ├── cwdc_vr_lev0.png          # Soil layer comparison plots
+│   └── ...                        # Additional variable plots
 └── plots/                         # Additional training plots
 ```
 
@@ -221,6 +228,66 @@ python ../../scripts/ai_model_comparison_plot.py \
 - **Plot Types**: PFT plots, soil layer plots, scalar variable plots
 - **Format**: High-resolution PNG files with statistical information
 
+### Step 8: Ingest AI Predictions into Model Restart File
+
+```bash
+python ../../scripts/ai_predictions_to_restart.py \
+    --variable-list ../../CNP_IO_demo1.txt
+```
+
+**Restart File Ingestion Process**:
+- **File Preparation**: Creates copy of original restart file
+- **Variable Selection**: Updates only PFT1D and soil2D variables from CNP_IO list
+- **Spatial Mapping**: Uses geographic coordinates to map AI data to model gridcells
+- **Data Replacement**: 
+  - PFT1D: Updates PFT1-PFT16 (skipping PFT0) in first column of each gridcell
+  - Soil2D: Updates first column and first 10 layers of each gridcell
+- **Output**: `updated_restart_CNP_IO_demo1_*.nc` file
+
+**Key Features**:
+- **Direct NetCDF Manipulation**: Bypasses xarray encoding issues
+- **Attribute Preservation**: Maintains all original file attributes and metadata
+- **Coordinate System**: Uses model coordinates as master for compatibility
+- **Selective Updates**: Only modifies specified variables, leaves others unchanged
+
+### Step 9: Verify AI-Enhanced Restart File
+
+```bash
+# Option 1: Use AI restart comparison script (recommended)
+python ../../scripts/ai_restart_comparison.py \
+    --variable-list ../../CNP_IO_demo1.txt \
+    --layers 0,5,9 \
+    --pfts 1,2,4,5,6,7,8,9
+
+# Option 2: Use general restart variable plot script
+python ../../scripts/restart_variable_plot.py \
+    --model final \
+    --new ./updated_restart_CNP_IO_demo1_*.nc
+
+# Option 3: Manual verification using NetCDF tools
+ncdump -h updated_restart_CNP_IO_demo1_*.nc | head -50
+ncdump -v tlai updated_restart_CNP_IO_demo1_*.nc | head -20
+```
+
+**Verification Process**:
+- **Data Integrity**: Confirms AI predictions were correctly ingested
+- **Variable Comparison**: Compares AI-enhanced values with original model values
+- **Spatial Alignment**: Verifies coordinate system and gridcell mapping
+- **Statistical Analysis**: Provides RMSE, NRMSE, R² metrics for each variable
+
+**Output Structure**:
+- **Location**: `./ai_restart_comparison_plots/`
+- **Plot Types**: Four-panel comparison plots (AI Enhanced, Original Model, Difference, Percent Difference)
+- **Variable Coverage**: All PFT1D and soil2D variables from CNP_IO list
+- **Layer Selection**: Configurable soil layers (default: 0, 5, 9)
+- **PFT Selection**: Configurable PFTs (default: 1,2,4,5,6,7,8,9)
+
+**Verification Metrics**:
+- **Spatial Distribution**: Geographic patterns and variability
+- **Value Comparison**: Statistical correlation between AI and model
+- **Difference Analysis**: Spatial patterns of AI enhancements
+- **Percent Difference**: Categorical analysis (0-10%, 10-30%, 30%+)
+
 ## Data Normalization & Denormalization
 
 ### Normalization Process
@@ -322,6 +389,20 @@ cwdc_denorm = soil_2d_scaler.inverse_transform(cwdc_norm)
 - **PFT Plots**: `tlai_pft1.png`, `tlai_pft2.png`, etc.
 - **Soil Plots**: `cwdc_vr_lev0.png`, `cwdc_vr_lev4.png`, etc.
 
+### Restart File Outputs
+
+**AI-Enhanced Restart Files**:
+- `updated_restart_CNP_IO_demo1_*.nc`: AI-enhanced model restart file
+- **File Size**: Same as original restart file (~3.1 GB)
+- **Content**: Original restart file with AI predictions integrated
+- **Compatibility**: Ready for ELM model simulations
+
+**Restart Verification Plots**:
+- `ai_restart_comparison_plots/`: Comprehensive verification plots
+- **Four-Panel Layout**: AI Enhanced, Original Model, Difference, Percent Difference
+- **Variable Coverage**: All PFT1D and soil2D variables from CNP_IO list
+- **Statistical Analysis**: RMSE, NRMSE, R² metrics for each comparison
+
 ## Troubleshooting
 
 ### Common Issues
@@ -401,6 +482,20 @@ cwdc_denorm = soil_2d_scaler.inverse_transform(cwdc_norm)
 - **Memory Management**: GPU memory optimization
 - **Parallel Processing**: Multi-worker data loading
 
+### Restart File Integration
+
+**Data Ingestion Process**:
+- **File Copying**: Creates backup of original restart file
+- **Direct NetCDF Manipulation**: Uses netCDF4 for low-level data access
+- **Spatial Mapping**: Geographic coordinate-based gridcell alignment
+- **Selective Variable Updates**: Only modifies CNP_IO-specified variables
+
+**Verification Methods**:
+- **Automated Comparison**: AI restart comparison script with statistical analysis
+- **General Restart Plotting**: Standard restart variable plot script
+- **Manual Inspection**: NetCDF command-line tools for detailed verification
+- **Statistical Validation**: RMSE, NRMSE, R² metrics for quality assessment
+
 ## Future Enhancements
 
 ### Planned Improvements
@@ -413,11 +508,13 @@ cwdc_denorm = soil_2d_scaler.inverse_transform(cwdc_norm)
 
 ### Integration Opportunities
 
-1. **ELM Model Integration**: Direct ingestion of AI predictions
+1. **ELM Model Integration**: Direct ingestion of AI predictions into restart files
 2. **Real-time Monitoring**: Continuous model performance tracking
 3. **Automated Retraining**: Trigger-based model updates
 4. **Distributed Training**: Multi-GPU and multi-node training
 5. **Cloud Deployment**: Scalable inference infrastructure
+6. **Restart File Validation**: Automated quality checks and verification
+7. **Model Simulation Pipeline**: End-to-end AI-enhanced model runs
 
 ---
 

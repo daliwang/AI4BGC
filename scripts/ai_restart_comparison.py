@@ -9,35 +9,23 @@ from matplotlib.colors import TwoSlopeNorm, ListedColormap, BoundaryNorm
 import argparse
 import glob
 from pathlib import Path
+import sys
 
-#VARIABLES = ['cwdc_vr', 'cwdn_vr', 'cwdp_vr', 'tlai'] # variables 
-VARIABLES = ['cwdc_vr','tlai']
-LEVGRND_LAYERS = [0, 5, 9] # layers for (column, levgrnd)-type variables (0,9)
-PFT_PICK_LIST = [2,3,4, 5, 6] # which PFT(s) to plot per gridcell   (1,16)
-
-DATA_DIR = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/'  # for ccsi_gpu_node1
-
-#FILE_NEW = '/home/UNT/dg0997/all_gdw/0_oak_weather/dataset/ornl_data_700/output/20250117_trendytest_ICB1850CNPRDCTCBC.elm.r.0781-01-01-00000.nc'
-#FILE_OLD = '/home/UNT/dg0997/all_gdw/0_oak_weather/26_automatical_dataset_train_restart/auto_dataset_training_restart/backup/results/enhanced_restart.nc'
+# Project imports
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from config.training_config import parse_cnp_io_list
 
 # Default file paths
+DATA_DIR = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/'
 DEFAULT_FILE_OLD = DATA_DIR + 'original_780_spinup_from_modelsimulation.nc'
-DEFAULT_FILE_NEW = './updated_restart_CNP_IO_demo1_original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc'
 
-# Model-specific file paths
-MODEL_FILES = {
-    'final': DATA_DIR + 'original_780_spinup_from_modelsimulation.nc',
-    'initial': DATA_DIR + 'original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc'
-}
+# Default layers and PFTs to plot
+LEVGRND_LAYERS = [0, 5, 9]  # layers for (column, levgrnd)-type variables (0,9)
+PFT_PICK_LIST = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # PFT0-PFT15 (representing PFT1-PFT16)
 
-# Default file paths (will be set based on arguments)
-FILE_OLD = None
-FILE_NEW = None
-
-LABEL_NEW = "AI results"
-LABEL_OLD = "780 year"
-
-OUTPUT_DIR = "./restart_gridcell_plots"
+LABEL_NEW = "AI Generated"
+LABEL_OLD = "Original Model"
+OUTPUT_DIR = "./ai_restart_comparison_plots"
 
 def _safe_get(ds, name):
     if name not in ds:
@@ -84,7 +72,6 @@ def _plot_map(ax, lon, lat, data, title, vmin=None, vmax=None, cmap="viridis", n
     gl.right_labels = False
     plt.colorbar(im, ax=ax, shrink=0.7, pad=0.05)
 
-
 def _percent_diff_categories(model_vals: np.ndarray, ai_vals: np.ndarray) -> np.ndarray:
     model = np.asarray(model_vals, dtype=float)
     ai = np.asarray(ai_vals, dtype=float)
@@ -96,24 +83,23 @@ def _percent_diff_categories(model_vals: np.ndarray, ai_vals: np.ndarray) -> np.
     mean_abs_model = np.nanmean(np.abs(model[finite])) if np.any(finite) else 0.0
     threshold = 0.02 * mean_abs_model
     denom = np.abs(model[finite])
-    # Compute percent (model - AI)/model in %
+    # Compute percent (AI - model)/model in %
     pct = (ai[finite] - model[finite]) / np.where(denom > 0, denom, 1.0) * 100.0
     # Apply threshold rule
     pct[denom <= threshold] = 0.0
     sign = np.sign(pct)
     mag = np.abs(pct)
     bins = np.zeros_like(mag, dtype=int)
-    bins[(mag >= 0) & (mag < 5)] = 1
-    bins[(mag >= 5) & (mag < 15)] = 2
-    bins[(mag >= 15) & (mag < 30)] = 3
-    bins[mag >= 30] = 4
+    bins[(mag >= 0) & (mag < 10)] = 1
+    bins[(mag >= 10) & (mag < 30)] = 2
+    bins[mag >= 30] = 3
     bins[(mag == 0)] = 0
     categories = sign.astype(int) * bins
     cat[finite] = categories.astype(float)
     return cat
 
 def _plot_tripanel(var, label_suffix, lon, lat, data_new, data_old, out_dir,
-                   label_new="780 year", label_old="AI results"):
+                   label_new="AI Enhanced", label_old="Original Model"):
     diff = data_new - data_old
     vmin_orig = np.nanmin([np.nanmin(data_new), np.nanmin(data_old)])
     vmax_orig = np.nanmax([np.nanmax(data_new), np.nanmax(data_old)])
@@ -157,7 +143,7 @@ def _plot_tripanel(var, label_suffix, lon, lat, data_new, data_old, out_dir,
     print(f"Stats for {var}{label_suffix}:")
     print(f"  {label_new}: sum={sum_new:.6g} min={min_new:.6g} max={max_new:.6g}")
     print(f"  {label_old}: sum={sum_old:.6g} min={min_old:.6g} max={max_old:.6g}")
-    print(f"  Metrics (old vs new): n={n} rmse={rmse:.6g} nrmse={nrmse:.6g} r2={r2:.6g}")
+    print(f"  Metrics (AI vs Model): n={n} rmse={rmse:.6g} nrmse={nrmse:.6g} r2={r2:.6g}")
 
     fig = plt.figure(figsize=(12, 20))
     gs = gridspec.GridSpec(4, 1, figure=fig, hspace=0.3)
@@ -187,18 +173,16 @@ def _plot_tripanel(var, label_suffix, lon, lat, data_new, data_old, out_dir,
     # Treat data_old as model, data_new as AI
     cat = _percent_diff_categories(data_old, data_new)
     colors = [
-        "#08519c",  # -4: 30%+
-        "#3182bd",  # -3: 15–30%
-        "#6baed6",  # -2: 5–15%
-        "#c6dbef",  # -1: 0–5%
+        "#08519c",  # -3: 30%+
+        "#6baed6",  # -2: 10–30%
+        "#c6dbef",  # -1: 0–10%
         "#bdbdbd",  #  0: 0
-        "#fcbba1",  # +1: 0–5%
-        "#fc9272",  # +2: 5–15%
-        "#fb6a4a",  # +3: 15–30%
-        "#cb181d",  # +4: 30%+
+        "#fcbba1",  # +1: 0–10%
+        "#fb6a4a",  # +2: 10–30%
+        "#cb181d",  # +3: 30%+
     ]
     cmap = ListedColormap(colors)
-    boundaries = [-4.5, -3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5]
+    boundaries = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]
     norm_cat = BoundaryNorm(boundaries, cmap.N)
 
     ax4.add_feature(cfeature.COASTLINE)
@@ -211,9 +195,9 @@ def _plot_tripanel(var, label_suffix, lon, lat, data_new, data_old, out_dir,
     gl4 = ax4.gridlines(draw_labels=True, alpha=0.5, linestyle="--")
     gl4.top_labels = False
     gl4.right_labels = False
-    cbar = plt.colorbar(im4, ax=ax4, shrink=0.7, pad=0.05, ticks=[-4, -3, -2, -1, 0, 1, 2, 3, 4])
+    cbar = plt.colorbar(im4, ax=ax4, shrink=0.7, pad=0.05, ticks=[-3, -2, -1, 0, 1, 2, 3])
     cbar.ax.set_yticklabels([
-        "-30%+", "-15–30%", "-5–15%", "-0–5%", "0", "0–5%", "5–15%", "15–30%", "30%+"
+        "-30%+", "-10–30%", "-0–10%", "0", "0–10%", "10–30%", "30%+"
     ])
 
     plt.suptitle(f"{var} {label_suffix}", fontsize=16, fontweight="bold", y=0.96)
@@ -224,72 +208,80 @@ def _plot_tripanel(var, label_suffix, lon, lat, data_new, data_old, out_dir,
     plt.close()
     print(f"  Saved: {path}")
 
-
 def parse_arguments():
-    """Parse command line arguments for model selection and file paths."""
-    parser = argparse.ArgumentParser(description='Plot restart variable comparisons')
-    parser.add_argument('--model', choices=['final', 'initial', 'none'], default='none',
-                       help='Model type: final (780 year), initial (2025), or none (auto-detect)')
-    parser.add_argument('--new', type=str, default=None,
-                       help='Path to new/updated restart file (overrides auto-detection)')
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Compare AI-enhanced restart file with original model file')
+    parser.add_argument('--variable-list', type=str, required=True,
+                       help='Path to CNP_IO list file')
+    parser.add_argument('--ai-restart', type=str, default=None,
+                       help='Path to AI-enhanced restart file (auto-detected if not specified)')
+    parser.add_argument('--original-restart', type=str, default=None,
+                       help='Path to original model restart file (default: 2025 model)')
+    parser.add_argument('--layers', type=str, default='0,5,9',
+                       help='Comma-separated list of soil layers to plot (default: 0,5,9)')
+    parser.add_argument('--pfts', type=str, default='1,2,4,5,6,7,8,9',
+                       help='Comma-separated list of PFTs to plot (default: all PFT0-PFT15)')
     
     return parser.parse_args()
 
-def find_default_new_file():
-    """Find the default new file in current directory with substring '20250408_trendytest_ICB1850CNPRDCTCBC'."""
+def find_ai_restart_file():
+    """Find AI-enhanced restart file in current directory."""
     current_dir = Path('.')
-    pattern = '*20250408_trendytest_ICB1850CNPRDCTCBC*.nc'
+    pattern = '*updated_restart_CNP_IO*'
     matching_files = list(current_dir.glob(pattern))
     
     if matching_files:
-        # Return the first matching file
-        return str(matching_files[0])
+        # Return the most recent file
+        return str(sorted(matching_files, key=lambda x: x.stat().st_mtime)[-1])
     else:
-        return DEFAULT_FILE_NEW
+        return None
 
 def main():
-    # Parse command line arguments
     args = parse_arguments()
     
-    # Set file paths based on arguments
-    global FILE_OLD, FILE_NEW
+    # Parse layers and PFTs
+    global LEVGRND_LAYERS, PFT_PICK_LIST
+    LEVGRND_LAYERS = [int(x.strip()) for x in args.layers.split(',')]
+    PFT_PICK_LIST = [int(x.strip()) for x in args.pfts.split(',')]
     
-    # Set FILE_OLD based on model argument
-    if args.model == 'final':
-        FILE_OLD = MODEL_FILES['final']
-    elif args.model == 'initial':
-        FILE_OLD = MODEL_FILES['initial']
-    else:  # args.model == 'none'
+    # Set file paths
+    if args.ai_restart:
+        FILE_NEW = args.ai_restart
+    else:
+        FILE_NEW = find_ai_restart_file()
+        if not FILE_NEW:
+            print("Error: No AI-enhanced restart file found. Please specify with --ai-restart")
+            return
+    
+    if args.original_restart:
+        FILE_OLD = args.original_restart
+    else:
         FILE_OLD = DEFAULT_FILE_OLD
     
-    # Set FILE_NEW based on --new argument or auto-detection
-    if args.new:
-        FILE_NEW = args.new
-    else:
-        FILE_NEW = find_default_new_file()
-    
-    # Update labels based on model selection
-    global LABEL_OLD, LABEL_NEW
-    if args.model == 'final':
-        LABEL_OLD = "780 year spinup"
-        LABEL_NEW = "AI results"
-    elif args.model == 'initial':
-        LABEL_OLD = "21 year initial"
-        LABEL_NEW = "AI results"
-    else:  # args.model == 'none'
-        LABEL_OLD = "Reference model"
-        LABEL_NEW = "AI results"
-    
-    print(f"Using FILE_OLD: {FILE_OLD}")
-    print(f"Using FILE_NEW: {FILE_NEW}")
-    print(f"Labels: {LABEL_OLD} vs {LABEL_NEW}")
-    
-    # Print full absolute paths for clarity
-    file_old_abs = os.path.abspath(FILE_OLD)
-    file_new_abs = os.path.abspath(FILE_NEW)
-    print(f"FILE_OLD (absolute): {file_old_abs}")
-    print(f"FILE_NEW (absolute): {file_new_abs}")
+    print(f"Using AI-enhanced restart: {FILE_NEW}")
+    print(f"Using original restart: {FILE_OLD}")
+    print(f"Layers to plot: {LEVGRND_LAYERS}")
+    print(f"PFTs to plot: {PFT_PICK_LIST}")
     print("-" * 80)
+    
+    # Parse CNP_IO list to get variables
+    print("Parsing CNP_IO list...")
+    cnp_io_vars = parse_cnp_io_list(Path(args.variable_list))
+    
+    # Extract variable names from the parsed structure
+    pft_1d_variables = cnp_io_vars.get('pft_1d_variables', [])
+    variables_2d_soil = cnp_io_vars.get('variables_2d_soil', [])
+    
+    # Combine all variables to plot
+    VARIABLES = pft_1d_variables + variables_2d_soil
+    
+    if not VARIABLES:
+        print("Error: No variables found in CNP_IO list")
+        return
+    
+    print(f"Variables to plot: {VARIABLES}")
+    print(f"  PFT1D: {pft_1d_variables}")
+    print(f"  Soil2D: {variables_2d_soil}")
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -320,6 +312,7 @@ def main():
         print(f"\nVariable {var}, dims: {dims}")
 
         if ("column" in dims) and ("levgrnd" in dims):
+            # Soil2D variable
             da_new_cl = da_new.transpose("column", "levgrnd")
             da_old_cl = da_old.transpose("column", "levgrnd")
             vals_new = _to_nan_fillvalue(da_new_cl.values)
@@ -337,7 +330,7 @@ def main():
                     cols = grid_to_cols[g]
                     if len(cols) == 0:
                         continue
-                    c0 = cols[0]
+                    c0 = cols[0]  # First column only
                     new_grid[g] = vals_new[c0, lev]
                     old_grid[g] = vals_old[c0, lev]
 
@@ -345,12 +338,17 @@ def main():
                                label_new=LABEL_NEW, label_old=LABEL_OLD)
 
         elif ("pft" in dims) and (len(dims) == 1):
+            # PFT1D variable
             da_new_p = da_new.transpose("pft")
             da_old_p = da_old.transpose("pft")
             vals_new = _to_nan_fillvalue(da_new_p.values)
             vals_old = _to_nan_fillvalue(da_old_p.values)
 
             for k in PFT_PICK_LIST:
+                if k < 0 or k >= da_new_p.sizes["pft"]:
+                    print(f"  PFT {k} out of range, skipped")
+                    continue
+                    
                 new_grid = np.full(n_grid, np.nan, dtype=float)
                 old_grid = np.full(n_grid, np.nan, dtype=float)
 
@@ -374,13 +372,15 @@ def main():
     
     # Print comparison summary
     print("\n" + "="*80)
-    print("COMPARISON SUMMARY:")
+    print("AI RESTART COMPARISON SUMMARY:")
     print("="*80)
-    print(f"Reference file (FILE_OLD): {os.path.abspath(FILE_OLD)}")
-    print(f"Comparison file (FILE_NEW): {os.path.abspath(FILE_NEW)}")
+    print(f"Original restart: {os.path.abspath(FILE_OLD)}")
+    print(f"AI-enhanced restart: {os.path.abspath(FILE_NEW)}")
     print(f"Labels: {LABEL_OLD} vs {LABEL_NEW}")
     print(f"Output directory: {os.path.abspath(OUTPUT_DIR)}")
     print(f"Variables plotted: {VARIABLES}")
+    print(f"Layers plotted: {LEVGRND_LAYERS}")
+    print(f"PFTs plotted: {PFT_PICK_LIST}")
     print("="*80)
     print("\nAll plots done! Output dir:", OUTPUT_DIR)
 
@@ -391,19 +391,18 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("USAGE EXAMPLES:")
     print("="*60)
-    print("1. Use final model (780 year spinup):")
-    print("   python restart_variable_plot.py --model final")
+    print("1. Basic usage with auto-detection:")
+    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt")
     print()
-    print("2. Use initial model (2025):")
-    print("   python restart_variable_plot.py --model initial")
+    print("2. Specify custom AI restart file:")
+    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --ai-restart /path/to/ai_restart.nc")
     print()
-    print("3. Use default model (auto-detect):")
-    print("   python restart_variable_plot.py --model none")
+    print("3. Specify custom original restart file:")
+    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --original-restart /path/to/original.nc")
     print()
-    print("4. Specify custom new file:")
-    print("   python restart_variable_plot.py --model final --new /path/to/custom/file.nc")
+    print("4. Custom layers and PFTs:")
+    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --layers 0,2,4,6,8 --pfts 0,1,2,3")
     print()
-    print("5. Auto-detect new file in current directory:")
-    print("   python restart_variable_plot.py --model initial")
-    print("   (Will find files containing '20250408_trendytest_ICB1850CNPRDCTCBC')")
+    print("5. Full custom configuration:")
+    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --ai-restart ai_file.nc --original-restart orig_file.nc --layers 0,5,9 --pfts 0,1,2,3,4,5")
     print("="*60)
