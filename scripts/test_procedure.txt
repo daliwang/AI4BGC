@@ -1,0 +1,11 @@
+# Test procedure
+# after the training is done, run the following command to compare the predictions with the ground truth
+# go the cnp_results/run_xxxx directory and run the following command
+
+python ../../scripts/compare_predictions.py --run-a ./ --against-gt
+
+# then use the following command to create restart files with the update_restart_with_aiprediction.py
+# to create restart files, you need to be in the cnp_results/run_xxxx directory
+# remember to use the reference-all option
+
+python ../../scripts/restart_file_creation.py --variable-list <user select CNP_IO file, such as ../../scripts/CNP_IO_list_default.txt>
