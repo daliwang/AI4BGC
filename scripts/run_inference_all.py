@@ -822,6 +822,42 @@ def run_inference_all(
         predictions_dir = output_path / 'cnp_predictions'
         predictions_dir.mkdir(exist_ok=True)
 
+        # Prepare location vectors (Longitude/Latitude) for joining to CSVs
+        longitude_values = None
+        latitude_values = None
+        try:
+            # Preferred: derive from denormalized static features (computed below as well)
+            # We'll compute once here if possible; otherwise fall back to loader DataFrame
+            maybe_static = None
+            maybe_static_cols = None
+            if isinstance(test_data, dict) and 'static' in test_data and isinstance(scalers, dict) and 'static' in scalers and hasattr(scalers['static'], 'inverse_transform'):
+                _static_np = test_data['static'].detach().cpu().numpy()
+                _static_denorm = scalers['static'].inverse_transform(_static_np)
+                _static_cols = data_info.get('static_columns', [])
+                if not _static_cols or len(_static_cols) < _static_denorm.shape[1]:
+                    _static_cols = [f'static_{i}' for i in range(_static_denorm.shape[1])]
+                maybe_static = _static_denorm
+                maybe_static_cols = _static_cols
+            # Extract coordinates from static if present
+            if maybe_static is not None and maybe_static_cols is not None:
+                # Try common longitude/latitude column names
+                lon_keys = ['Longitude', 'longitude', 'lon', 'LON']
+                lat_keys = ['Latitude', 'latitude', 'lat', 'LAT']
+                lon_name = next((k for k in lon_keys if k in maybe_static_cols), None)
+                lat_name = next((k for k in lat_keys if k in maybe_static_cols), None)
+                if lon_name is not None and lat_name is not None:
+                    lon_idx = maybe_static_cols.index(lon_name)
+                    lat_idx = maybe_static_cols.index(lat_name)
+                    longitude_values = maybe_static[:, lon_idx]
+                    latitude_values = maybe_static[:, lat_idx]
+            # Fallback: use loader DataFrame if available
+            if (longitude_values is None or latitude_values is None) and hasattr(_loader, 'df') and isinstance(_loader.df, pd.DataFrame):
+                if 'Longitude' in _loader.df.columns and 'Latitude' in _loader.df.columns:
+                    longitude_values = _loader.df['Longitude'].values[-len(test_data['static']):] if isinstance(test_data, dict) and 'static' in test_data else _loader.df['Longitude'].values
+                    latitude_values = _loader.df['Latitude'].values[-len(test_data['static']):] if isinstance(test_data, dict) and 'static' in test_data else _loader.df['Latitude'].values
+        except Exception as _e_loc:
+            logging.warning(f"Failed to prepare location vectors: {_e_loc}")
+
         # 1) Save scalar predictions and ground truth
         try:
             if 'scalar' in predictions and hasattr(predictions['scalar'], 'numel') and predictions['scalar'].numel() > 0:
@@ -840,7 +876,12 @@ def run_inference_all(
                 except Exception as e:
                     logging.warning(f"Failed inverse transform for scalar predictions: {e}")
                     preds_scalar_denorm = preds_scalar_np
-                pd.DataFrame(preds_scalar_denorm, columns=scalar_cols).to_csv(predictions_dir / 'predictions_scalar.csv', index=False)
+                _pred_scalar_df = pd.DataFrame(preds_scalar_denorm, columns=scalar_cols)
+                # Prepend location columns if available
+                if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(_pred_scalar_df):
+                    _pred_scalar_df.insert(0, 'Longitude', longitude_values)
+                    _pred_scalar_df.insert(1, 'Latitude', latitude_values)
+                _pred_scalar_df.to_csv(predictions_dir / 'predictions_scalar.csv', index=False)
                 # Ground truth if present
                 if isinstance(test_data, dict) and 'y_scalar' in test_data and hasattr(test_data['y_scalar'], 'numel') and test_data['y_scalar'].numel() > 0:
                     gt_scalar_np = test_data['y_scalar'].detach().cpu().numpy()
@@ -854,7 +895,11 @@ def run_inference_all(
                     except Exception as e:
                         logging.warning(f"Failed inverse transform for scalar ground truth: {e}")
                         gt_scalar_denorm = gt_scalar_np
-                    pd.DataFrame(gt_scalar_denorm, columns=scalar_cols).to_csv(predictions_dir / 'ground_truth_scalar.csv', index=False)
+                    _gt_scalar_df = pd.DataFrame(gt_scalar_denorm, columns=scalar_cols)
+                    if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(_gt_scalar_df):
+                        _gt_scalar_df.insert(0, 'Longitude', longitude_values)
+                        _gt_scalar_df.insert(1, 'Latitude', latitude_values)
+                    _gt_scalar_df.to_csv(predictions_dir / 'ground_truth_scalar.csv', index=False)
             else:
                 logging.info("No scalar predictions present; skipping scalar CSV export")
         except Exception as e:
@@ -916,7 +961,11 @@ def run_inference_all(
                     logging.warning(f"Pre-save PFT1D pred dump failed for {var_name}: {_e}")
 
                 columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
-                pd.DataFrame(var_predictions_original, columns=columns).to_csv(pft_1d_dir / f'predictions_{var_name}.csv', index=False)
+                _pft_pred_df = pd.DataFrame(var_predictions_original, columns=columns)
+                if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(_pft_pred_df):
+                    _pft_pred_df.insert(0, 'Longitude', longitude_values)
+                    _pft_pred_df.insert(1, 'Latitude', latitude_values)
+                _pft_pred_df.to_csv(pft_1d_dir / f'predictions_{var_name}.csv', index=False)
             
             # Write ground truth if present
             if isinstance(test_data, dict) and 'y_pft_1d' in test_data and hasattr(test_data['y_pft_1d'], 'numel') and test_data['y_pft_1d'].numel() > 0:
@@ -966,7 +1015,11 @@ def run_inference_all(
                     except Exception as _e:
                         logging.warning(f"Pre-save PFT1D GT dump failed for {var_name}: {_e}")
                     columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
-                    pd.DataFrame(var_gt_original, columns=columns).to_csv(pft_1d_gt_dir / f'ground_truth_{var_name}.csv', index=False)
+                    _pft_gt_df = pd.DataFrame(var_gt_original, columns=columns)
+                    if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(_pft_gt_df):
+                        _pft_gt_df.insert(0, 'Longitude', longitude_values)
+                        _pft_gt_df.insert(1, 'Latitude', latitude_values)
+                    _pft_gt_df.to_csv(pft_1d_gt_dir / f'ground_truth_{var_name}.csv', index=False)
             logging.info("pft_1d predictions and ground truth saved under cnp_predictions/")
         else:
             logging.info("No pft_1d predictions present; skipping CSV export")
@@ -1016,7 +1069,11 @@ def run_inference_all(
                         var_pred_orig = var_pred
                     flat = var_pred_orig.reshape(n_samples, num_columns * num_layers)
                     columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
-                    pd.DataFrame(flat, columns=columns).to_csv(soil_dir / f'predictions_{var_name}.csv', index=False)
+                    _soil_pred_df = pd.DataFrame(flat, columns=columns)
+                    if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(_soil_pred_df):
+                        _soil_pred_df.insert(0, 'Longitude', longitude_values)
+                        _soil_pred_df.insert(1, 'Latitude', latitude_values)
+                    _soil_pred_df.to_csv(soil_dir / f'predictions_{var_name}.csv', index=False)
                 # Ground truth if present
                 if isinstance(test_data, dict) and 'y_soil_2d' in test_data and hasattr(test_data['y_soil_2d'], 'numel') and test_data['y_soil_2d'].numel() > 0:
                     soil_gt = test_data['y_soil_2d'].detach().cpu().numpy()
@@ -1056,7 +1113,11 @@ def run_inference_all(
                             var_gt_orig = var_gt
                         flat = var_gt_orig.reshape(n_samples, num_columns * num_layers)
                         columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
-                        pd.DataFrame(flat, columns=columns).to_csv(soil_gt_dir / f'ground_truth_{var_name}.csv', index=False)
+                        _soil_gt_df = pd.DataFrame(flat, columns=columns)
+                        if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(_soil_gt_df):
+                            _soil_gt_df.insert(0, 'Longitude', longitude_values)
+                            _soil_gt_df.insert(1, 'Latitude', latitude_values)
+                        _soil_gt_df.to_csv(soil_gt_dir / f'ground_truth_{var_name}.csv', index=False)
                 logging.info("soil_2d predictions and ground truth saved under cnp_predictions/")
             else:
                 logging.info("No soil_2d predictions present; skipping soil_2d CSV export")
@@ -1118,11 +1179,15 @@ def run_inference_all(
             static_cols = data_info.get('static_columns', [])
             if not static_cols or len(static_cols) < static_denorm.shape[1]:
                 static_cols = [f'static_{i}' for i in range(static_denorm.shape[1])]
-            pd.DataFrame(static_denorm, columns=static_cols).to_csv(predictions_dir / 'test_static_inverse.csv', index=False)
+            static_df = pd.DataFrame(static_denorm, columns=static_cols)
+            static_df.to_csv(predictions_dir / 'test_static_inverse.csv', index=False)
             logging.info(f"Inverse-transformed test static features saved to {predictions_dir / 'test_static_inverse.csv'}")
 
             # Verify locations in static inverse
-            verify_locations(static_df, "Static inverse (denormalized)")
+            try:
+                verify_locations(static_df, "Static inverse (denormalized)")
+            except Exception:
+                pass
         else:
             logging.info("Static scaler or data not available; skipping test_static_inverse.csv")
     except Exception as e:

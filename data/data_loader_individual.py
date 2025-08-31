@@ -1242,6 +1242,16 @@ class DataLoaderIndividual:
         logger.info(f"  - Train split ratio: {self.data_config.train_split}")
         logger.info(f"  - Train size: {train_size}")
         logger.info(f"  - Test size: {test_size}")
+
+        # Expose split indices for downstream use (e.g., location validation)
+        # Matches the contiguous slicing used below
+        try:
+            self.train_indices = np.arange(0, train_size, dtype=int)
+            self.test_indices = np.arange(train_size, total_samples, dtype=int)
+        except Exception:
+            # Fallback without crashing if numpy not available for some reason
+            self.train_indices = list(range(0, train_size))
+            self.test_indices = list(range(train_size, total_samples))
         
         if test_size == 0:
             logger.error("Test size is 0! This will cause evaluation issues.")

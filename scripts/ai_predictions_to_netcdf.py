@@ -187,9 +187,9 @@ def load_ai_predictions(predictions_dir: Path) -> Dict[str, Any]:
         preds['scalar'] = pd.read_csv(scalar_path)
         print(f"  Loaded scalar predictions: {preds['scalar'].shape}")
         # Print sample locations if available
-            if 'Longitude' in preds['scalar'] and 'Latitude' in preds['scalar']:
-        sample_locs = preds['scalar'][['Longitude', 'Latitude']].drop_duplicates().head(5)
-        print(f"  Sample locations (first 5 unique):\n{sample_locs}")
+        if 'Longitude' in preds['scalar'] and 'Latitude' in preds['scalar']:
+            sample_locs = preds['scalar'][['Longitude', 'Latitude']].drop_duplicates().head(5)
+            print(f"  Sample locations (first 5 unique):\n{sample_locs}")
     
     # Load 1D PFT predictions
     pft_dir = predictions_dir / 'pft_1d_predictions'
@@ -427,6 +427,8 @@ def main():
                        help='Output NetCDF file path')
     parser.add_argument('--examples', action='store_true', 
                        help='Show example usage and exit')
+    parser.add_argument('--wrap-longitude', action='store_true', default=True,
+                       help='Wrap longitudes from 0–360 to -180–180 (default: on). Use --no-wrap-longitude to disable if shell supports).')
     
     args = parser.parse_args()
     
@@ -480,6 +482,35 @@ Examples:
     
     # Load AI predictions
     ai_preds = load_ai_predictions(ai_predictions_dir)
+
+    # Report current lon/lat ranges from static inverse if available
+    if 'test_static_inverse' in ai_preds:
+        try:
+            _sdf = ai_preds['test_static_inverse']
+            if {'Longitude','Latitude'}.issubset(_sdf.columns):
+                lon_min, lon_max = float(pd.to_numeric(_sdf['Longitude'], errors='coerce').min()), float(pd.to_numeric(_sdf['Longitude'], errors='coerce').max())
+                lat_min, lat_max = float(pd.to_numeric(_sdf['Latitude'], errors='coerce').min()), float(pd.to_numeric(_sdf['Latitude'], errors='coerce').max())
+                print(f"  Before wrapping - grid1d_lon min/max: {lon_min}, {lon_max}")
+                print(f"  Before wrapping - grid1d_lat min/max: {lat_min}, {lat_max}")
+        except Exception as _e:
+            print(f"  Warning: Failed to compute pre-wrap lon/lat ranges: {_e}")
+
+    # Optional longitude wrapping 0–360 -> -180–180
+    if getattr(args, 'wrap_longitude', False) and 'test_static_inverse' in ai_preds:
+        try:
+            static_df = ai_preds['test_static_inverse']
+            if 'Longitude' in static_df.columns:
+                lon = pd.to_numeric(static_df['Longitude'], errors='coerce')
+                wrapped = ((lon + 180.0) % 360.0) - 180.0
+                static_df['Longitude'] = wrapped
+                ai_preds['test_static_inverse'] = static_df
+                lon_min, lon_max = float(wrapped.min()), float(wrapped.max())
+                print(f"  After wrapping - grid1d_lon min/max: {lon_min}, {lon_max}")
+                if 'Latitude' in static_df.columns:
+                    lat = pd.to_numeric(static_df['Latitude'], errors='coerce')
+                    print(f"  Latitude min/max: {float(lat.min())}, {float(lat.max())}")
+        except Exception as _e:
+            print(f"  Warning: Failed to wrap longitudes: {_e}")
     
     # Create NetCDF structure
     ds = create_netcdf_structure(ai_preds, variable_list, output_path)
