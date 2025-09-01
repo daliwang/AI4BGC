@@ -1067,6 +1067,28 @@ class ModelTrainer:
             else:
                 logger.info(f"  {key}: {type(tensor)}")
 
+        # Prepare location vectors (Longitude/Latitude) for joining to CSVs
+        longitude_values = None
+        latitude_values = None
+        try:
+            if 'static' in self.test_data and 'static' in self.scalers and hasattr(self.scalers['static'], 'inverse_transform'):
+                _static_np = self.test_data['static'].cpu().numpy()
+                _static_denorm = self.scalers['static'].inverse_transform(_static_np)
+                _static_cols = self.data_info.get('static_columns', [])
+                if not _static_cols or len(_static_cols) < _static_denorm.shape[1]:
+                    _static_cols = [f'static_{i}' for i in range(_static_denorm.shape[1])]
+                lon_keys = ['Longitude', 'longitude', 'lon', 'LON']
+                lat_keys = ['Latitude', 'latitude', 'lat', 'LAT']
+                lon_name = next((k for k in lon_keys if k in _static_cols), None)
+                lat_name = next((k for k in lat_keys if k in _static_cols), None)
+                if lon_name is not None and lat_name is not None:
+                    lon_idx = _static_cols.index(lon_name)
+                    lat_idx = _static_cols.index(lat_name)
+                    longitude_values = _static_denorm[:, lon_idx]
+                    latitude_values = _static_denorm[:, lat_idx]
+        except Exception as _e_loc:
+            logger.warning(f"Failed to prepare location vectors: {_e_loc}")
+
         # Save scalar predictions with inverse transformation
         predictions_scalar_np = predictions['scalar'].cpu().numpy()
         scalar_cols = self.data_info['y_list_scalar_columns'][:predictions_scalar_np.shape[1]]
@@ -1084,6 +1106,9 @@ class ModelTrainer:
             predictions_scalar_original = predictions_scalar_np
         
         predictions_df = pd.DataFrame(predictions_scalar_original, columns=scalar_cols)
+        if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(predictions_df):
+            predictions_df.insert(0, 'Longitude', longitude_values)
+            predictions_df.insert(1, 'Latitude', latitude_values)
         predictions_df.to_csv(os.path.join(predictions_dir, 'predictions_scalar.csv'), index=False)
         
         # Save ground truth scalar with inverse transformation if available
@@ -1103,6 +1128,9 @@ class ModelTrainer:
                 ground_truth_scalar_original = ground_truth_scalar_np
             
             ground_truth_scalar_df = pd.DataFrame(ground_truth_scalar_original, columns=scalar_cols)
+            if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(ground_truth_scalar_df):
+                ground_truth_scalar_df.insert(0, 'Longitude', longitude_values)
+                ground_truth_scalar_df.insert(1, 'Latitude', latitude_values)
             ground_truth_scalar_df.to_csv(os.path.join(predictions_dir, 'ground_truth_scalar.csv'), index=False)
 
         # Save pft_1d predictions if available
@@ -1146,6 +1174,9 @@ class ModelTrainer:
                 
                 columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
                 var_df = pd.DataFrame(var_predictions_original, columns=columns)
+                if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(var_df):
+                    var_df.insert(0, 'Longitude', longitude_values)
+                    var_df.insert(1, 'Latitude', latitude_values)
                 var_df.to_csv(os.path.join(pft_1d_dir, f'predictions_{var_name}.csv'), index=False)
             # Save ground truth if available
             if 'y_pft_1d' in self.test_data:
@@ -1193,6 +1224,9 @@ class ModelTrainer:
                     
                     columns = [f'{var_name}_pft{p+1}' for p in range(num_pfts)]
                     var_gt_df = pd.DataFrame(var_gt_original, columns=columns)
+                    if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(var_gt_df):
+                        var_gt_df.insert(0, 'Longitude', longitude_values)
+                        var_gt_df.insert(1, 'Latitude', latitude_values)
                     var_gt_df.to_csv(os.path.join(pft_1d_gt_dir, f'ground_truth_{var_name}.csv'), index=False)
             logger.info("pft_1d predictions and ground truth saved separately for each variable and PFT")
 
@@ -1261,6 +1295,9 @@ class ModelTrainer:
                 var_predictions_2d = var_predictions_original.reshape(n_samples, num_columns * num_layers)
                 columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
                 var_df = pd.DataFrame(var_predictions_2d, columns=columns)
+                if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(var_df):
+                    var_df.insert(0, 'Longitude', longitude_values)
+                    var_df.insert(1, 'Latitude', latitude_values)
                 var_df.to_csv(os.path.join(soil_2d_dir, f'predictions_{var_name}.csv'), index=False)
             # Save ground truth if available
             if 'y_soil_2d' in self.test_data:
@@ -1325,6 +1362,9 @@ class ModelTrainer:
                     var_gt_2d = var_gt_original.reshape(n_samples, num_columns * num_layers)
                     columns = [f'{var_name}_col{c+1}_layer{l+1}' for c in range(num_columns) for l in range(num_layers)]
                     var_gt_df = pd.DataFrame(var_gt_2d, columns=columns)
+                    if longitude_values is not None and latitude_values is not None and len(longitude_values) == len(var_gt_df):
+                        var_gt_df.insert(0, 'Longitude', longitude_values)
+                        var_gt_df.insert(1, 'Latitude', latitude_values)
                     var_gt_df.to_csv(os.path.join(soil_2d_gt_dir, f'ground_truth_{var_name}.csv'), index=False)
             logger.info("soil_2d predictions and ground truth saved separately for each variable, column, and layer")
 
