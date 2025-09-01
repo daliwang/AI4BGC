@@ -379,9 +379,23 @@ class ModelTrainer:
 
             # Compute loss
             loss = self._compute_loss(outputs['scalar'], y_scalar)
-            #loss += self._compute_loss(outputs['pft_1d'], y_pft_1d)
-            loss += self._compute_loss(outputs['pft_1d'], y_pft_1d.view(y_pft_1d.size(0), -1))
-            #loss += self._compute_loss(outputs['soil_2d'], y_soil_2d)
+            # Vector (PFT1D): base MSE
+            vector_pred = outputs['pft_1d']
+            vector_targ = y_pft_1d
+            loss += self._compute_loss(vector_pred.view(vector_pred.size(0), -1), vector_targ.view(vector_targ.size(0), -1))
+            # Optional sparsity regularization: penalize non-zero predictions where target is zero
+            if getattr(self.config, 'pft_zero_sparsity_weight', 0.0) > 0.0:
+                with torch.no_grad():
+                    zero_mask = (vector_targ.abs() <= getattr(self.config, 'pft_zero_threshold', 1e-8))
+                # Reshape predictions to match target shape if needed
+                try:
+                    pred_for_penalty = (vector_pred if vector_pred.shape == vector_targ.shape
+                                        else vector_pred.view_as(vector_targ))
+                    sparsity_penalty = (pred_for_penalty.abs() * zero_mask).mean()
+                    loss = loss + self.config.pft_zero_sparsity_weight * sparsity_penalty
+                except Exception:
+                    pass
+            # Matrix (Soil2D)
             loss += self._compute_loss(outputs['soil_2d'].view(y_soil_2d.size(0), -1), y_soil_2d.view(y_soil_2d.size(0), -1))
             if 'water' in self.train_data and 'y_water' in self.train_data and 'water' in outputs:
                 loss += self._compute_loss(outputs['water'], y_water)
@@ -545,9 +559,22 @@ class ModelTrainer:
 
                 # Compute loss
                 loss = self._compute_loss(outputs['scalar'], y_scalar)
-                #loss += self._compute_loss(outputs['pft_1d'], y_pft_1d)
-                loss += self._compute_loss(outputs['pft_1d'].view(y_pft_1d.size(0), -1), y_pft_1d.view(y_pft_1d.size(0), -1))
-                #loss += self._compute_loss(outputs['soil_2d'], y_soil_2d)
+                # Vector (PFT1D): base MSE
+                vector_pred = outputs['pft_1d']
+                vector_targ = y_pft_1d
+                loss += self._compute_loss(vector_pred.view(vector_pred.size(0), -1), vector_targ.view(vector_targ.size(0), -1))
+                # Optional sparsity regularization at validation (reporting only)
+                if getattr(self.config, 'pft_zero_sparsity_weight', 0.0) > 0.0:
+                    with torch.no_grad():
+                        zero_mask = (vector_targ.abs() <= getattr(self.config, 'pft_zero_threshold', 1e-8))
+                        try:
+                            pred_for_penalty = (vector_pred if vector_pred.shape == vector_targ.shape
+                                                else vector_pred.view_as(vector_targ))
+                            sparsity_penalty = (pred_for_penalty.abs() * zero_mask).mean()
+                            loss = loss + self.config.pft_zero_sparsity_weight * sparsity_penalty
+                        except Exception:
+                            pass
+                # Matrix (Soil2D)
                 loss += self._compute_loss(outputs['soil_2d'].view(y_soil_2d.size(0), -1), y_soil_2d.view(y_soil_2d.size(0), -1))
                 if 'water' in self.test_data and 'y_water' in self.test_data and 'water' in outputs:
                     loss += self._compute_loss(outputs['water'], y_water)

@@ -220,6 +220,10 @@ class TrainingConfig:
     # Learnable loss weighting for CNP model
     use_learnable_loss_weights: bool = False
 
+    # PFT sparsity regularization (encourage zero predictions where targets are zero)
+    pft_zero_sparsity_weight: float = 0.1  # set >0 to enable (e.g., 0.1)
+    pft_zero_threshold: float = 1e-8       # threshold in normalized target space for zero mask
+
     def get_device(self) -> torch.device:
         """Get the appropriate device for training."""
         if self.device == 'auto':

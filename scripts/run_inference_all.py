@@ -110,6 +110,15 @@ def _extract_variables_from_config(config_path: Path) -> dict:
         logging.warning(f"Could not extract variables from config: {e}")
         return None
 
+
+
+
+
+
+
+
+
+
 # Add this function to verify locations
 def verify_locations(df: pd.DataFrame, context: str) -> None:
     """Verify and print sample locations in a DataFrame."""
@@ -129,7 +138,8 @@ def run_inference_all(
     use_training_config: bool = True,
     strict_loading: bool = True,
     debug_vars: bool = False,
-    loader: str = 'auto'
+    loader: str = 'auto',
+    mask_pft_with_gt: bool = False
 ) -> Path:
     """Run inference with the trained CNP model over the entire dataset.
     
@@ -139,6 +149,17 @@ def run_inference_all(
     3. Uses the existing scalers for normalization during inference
     4. Runs predictions and saves results
     """
+    
+    # Set fixed random seed for reproducible results
+    import random
+    import numpy as np
+    torch.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     
     # Handle variable list: either use provided CNP_IO file or auto-detect from training config
     variables = None
@@ -204,6 +225,9 @@ def run_inference_all(
     # Set train_split to 0.0 for inference (all data goes to test)
     config.data_config.train_split = 0.0
     
+    # CRITICAL FIX: Disable shuffling for inference to maintain data order
+    config.data_config.shuffle_data = False
+    
     # Decide normalization pipeline by inspecting training run scalers next to model_path
     model_dir = Path(model_path).parent
     
@@ -258,25 +282,14 @@ def run_inference_all(
     logging.info(f"Loading existing scalers from {scalers_dir}")
     
     # Load the scalers that were saved during training
-    # Robust approach: load all *_scaler.pkl files and normalize keys.
+    # FIXED: Prioritize individual scalers to match training normalization
     scalers = {}
     try:
         import pickle  # local import to avoid polluting module scope
-        # 1) Load consolidated group scalers if present
-        group_file = scalers_dir / 'group_scalers.pkl'
-        if group_file.exists():
-            try:
-                with open(group_file, 'rb') as f:
-                    grp = pickle.load(f)
-                if isinstance(grp, dict):
-                    scalers.update(grp)
-                    logging.info(f"Loaded group_scalers.pkl with keys: {list(grp.keys())}")
-            except Exception as e:
-                logging.warning(f"Failed loading group_scalers.pkl: {e}")
-        # 2) Load any individual or standalone scaler pickles
-        for scaler_file in scalers_dir.glob('*.pkl'):
-            if scaler_file.name == 'group_scalers.pkl':
-                continue
+        
+        # First pass: load individual scalers (priority)
+        individual_scalers = {}
+        for scaler_file in scalers_dir.glob('individual_*.pkl'):
             try:
                 with open(scaler_file, 'rb') as f:
                     obj = pickle.load(f)
@@ -286,11 +299,46 @@ def run_inference_all(
                     key = key[len('individual_'):]
                 if key.endswith('_scaler'):
                     key = key[:-len('_scaler')]
-                # Do not overwrite existing dict entries unless empty
-                if key not in scalers:
-                    scalers[key] = obj
+                individual_scalers[key] = obj
+                logging.info(f"Loaded individual scaler: {scaler_file.name} -> {key}")
             except Exception as e:
-                logging.warning(f"Failed loading scaler {scaler_file.name}: {e}")
+                logging.warning(f"Failed loading individual scaler {scaler_file.name}: {e}")
+        
+        # Second pass: load group scalers only if individual not available
+        group_scalers = {}
+        # 1) Load consolidated group scalers if present
+        group_file = scalers_dir / 'group_scalers.pkl'
+        if group_file.exists():
+            try:
+                with open(group_file, 'rb') as f:
+                    grp = pickle.load(f)
+                if isinstance(grp, dict):
+                    group_scalers.update(grp)
+                    logging.info(f"Loaded group_scalers.pkl with keys: {list(grp.keys())}")
+            except Exception as e:
+                logging.warning(f"Failed loading group_scalers.pkl: {e}")
+        
+        # 2) Load any other standalone scaler pickles (non-individual)
+        for scaler_file in scalers_dir.glob('*.pkl'):
+            if scaler_file.name == 'group_scalers.pkl' or scaler_file.name.startswith('individual_'):
+                continue
+            try:
+                with open(scaler_file, 'rb') as f:
+                    obj = pickle.load(f)
+                # Normalize key name: strip '_scaler' suffix
+                key = scaler_file.stem
+                if key.endswith('_scaler'):
+                    key = key[:-len('_scaler')]
+                group_scalers[key] = obj
+            except Exception as e:
+                logging.warning(f"Failed loading group scaler {scaler_file.name}: {e}")
+        
+        # Merge: individual scalers take priority
+        scalers.update(group_scalers)  # Load group first
+        scalers.update(individual_scalers)  # Override with individual
+        
+        logging.info(f"Scaler priority: individual={len(individual_scalers)}, group={len(group_scalers)}")
+        
     except Exception as e:
         raise ValueError(f"Failed to load scalers from {scalers_dir}: {e}")
     
@@ -591,10 +639,37 @@ def run_inference_all(
             logging.warning("Training scaler 'y_scalar' not found; leaving y_scalar unnormalized")
         y_scalar_t = torch.tensor(y_scalar_mat, dtype=dtype)
 
-        # 1D PFT X
+        # 1D PFT X (ensure PFT0 is dropped and length=16)
         x1d_cols = config.data_config.x_list_columns_1d
-        col_data = [np.vstack(df[col].values) if col in df.columns else np.zeros((len(df), 16), dtype=np.float32) for col in x1d_cols]
-        pft1d = np.stack(col_data, axis=1)  # (n, vars, pfts)
+        col_data = []
+        for col in x1d_cols:
+            if col in df.columns:
+                raw = df[col].values
+                mat = []
+                for v in raw:
+                    arr = np.array(v, dtype=np.float32) if isinstance(v, (list, np.ndarray)) else np.zeros(16, dtype=np.float32)
+                    if arr.ndim == 1:
+                        # If 17 (has PFT0), drop the first; if 16 (PFT1..PFT16), keep as-is; otherwise pad to 16
+                        if arr.shape[0] >= 17:
+                            arr = arr[1:17]
+                        elif arr.shape[0] == 16:
+                            arr = arr
+                        else:
+                            arr = np.pad(arr, (0, 16 - arr.shape[0]), mode='constant')
+                    elif arr.ndim > 1:
+                        arr = arr.flatten()
+                        if arr.shape[0] >= 17:
+                            arr = arr[1:17]
+                        elif arr.shape[0] == 16:
+                            arr = arr
+                        else:
+                            arr = np.pad(arr, (0, 16 - arr.shape[0]), mode='constant')
+                    mat.append(arr)
+                mat = np.vstack(mat)
+            else:
+                mat = np.zeros((len(df), 16), dtype=np.float32)
+            col_data.append(mat)
+        pft1d = np.stack(col_data, axis=1)  # (n, vars, 16)
         if 'pft_1d' in scalers:
             if hasattr(scalers['pft_1d'], 'transform'):
                 flat = pft1d.reshape(len(df), -1)
@@ -608,9 +683,35 @@ def run_inference_all(
             logging.warning("Training scaler 'pft_1d' not found; leaving pft_1d unnormalized (group)")
         variables_1d_pft_t = torch.tensor(pft1d, dtype=dtype)
 
-        # 1D PFT Y
+        # 1D PFT Y (ensure PFT0 is dropped and length=16)
         y1d_cols = config.data_config.y_list_columns_1d
-        y_col_data = [np.vstack(df[col].values) if col in df.columns else np.zeros((len(df), 16), dtype=np.float32) for col in y1d_cols]
+        y_col_data = []
+        for col in y1d_cols:
+            if col in df.columns:
+                raw = df[col].values
+                mat = []
+                for v in raw:
+                    arr = np.array(v, dtype=np.float32) if isinstance(v, (list, np.ndarray)) else np.zeros(16, dtype=np.float32)
+                    if arr.ndim == 1:
+                        if arr.shape[0] >= 17:
+                            arr = arr[1:17]
+                        elif arr.shape[0] == 16:
+                            arr = arr
+                        else:
+                            arr = np.pad(arr, (0, 16 - arr.shape[0]), mode='constant')
+                    elif arr.ndim > 1:
+                        arr = arr.flatten()
+                        if arr.shape[0] >= 17:
+                            arr = arr[1:17]
+                        elif arr.shape[0] == 16:
+                            arr = arr
+                        else:
+                            arr = np.pad(arr, (0, 16 - arr.shape[0]), mode='constant')
+                    mat.append(arr)
+                mat = np.vstack(mat)
+            else:
+                mat = np.zeros((len(df), 16), dtype=np.float32)
+            y_col_data.append(mat)
         y_pft1d = np.stack(y_col_data, axis=1)
         if 'y_pft_1d' in scalers:
             if hasattr(scalers['y_pft_1d'], 'transform'):
@@ -776,11 +877,21 @@ def run_inference_all(
     
     # Run inference directly on all data
     logging.info("Running inference on entire dataset...")
+    
+    # CRITICAL: Ensure model is in evaluation mode and disable all randomness
     model.eval()
+    torch.set_grad_enabled(False)
+    
+    # Additional determinism for batch norm and dropout
+    for module in model.modules():
+        if hasattr(module, 'training'):
+            module.training = False
+    
     # Move inputs to device
     for k in list(model_inputs.keys()):
         if isinstance(model_inputs[k], torch.Tensor):
             model_inputs[k] = model_inputs[k].to(device)
+    
     with torch.no_grad():
         # Support optional water if present
         if 'water' in model_inputs:
@@ -923,6 +1034,17 @@ def run_inference_all(
             pft_1d_dir = predictions_dir / 'pft_1d_predictions'
             pft_1d_dir.mkdir(exist_ok=True)
             
+            # Optionally prepare GT mask for PFTs (to zero-out predictions where GT is zero)
+            gt_mask_per_var = None
+            if mask_pft_with_gt and isinstance(test_data, dict) and 'y_pft_1d' in test_data and hasattr(test_data['y_pft_1d'], 'numel') and test_data['y_pft_1d'].numel() > 0:
+                try:
+                    gt_arr = test_data['y_pft_1d'].detach().cpu().numpy()
+                    if gt_arr.ndim == 2:
+                        gt_arr = gt_arr.reshape(n_samples, -1, num_pfts)
+                    gt_mask_per_var = (gt_arr > 0)
+                except Exception:
+                    gt_mask_per_var = None
+
             # Write predictions per variable (denormalized when possible)
             for v in range(num_variables):
                 var_name = var_names[v]
@@ -951,6 +1073,13 @@ def run_inference_all(
                 except Exception as e:
                     logging.warning(f"Failed inverse transform for PFT 1D predictions {var_name}: {e}")
                     var_predictions_original = var_predictions
+                # Apply optional GT-based mask
+                try:
+                    if gt_mask_per_var is not None and v < gt_mask_per_var.shape[1]:
+                        mask_v = gt_mask_per_var[:, v, :]
+                        var_predictions_original = var_predictions_original * mask_v.astype(var_predictions_original.dtype)
+                except Exception:
+                    pass
                 
                 # Optional dump before saving predictions
                 try:
@@ -1199,7 +1328,7 @@ def run_inference_all(
 def main():
     parser = argparse.ArgumentParser(description="Run CNP model inference over entire dataset")
     parser.add_argument("--model", default='./cnp_predictions/model.pth', help="Path to trained model (.pth)")
-    parser.add_argument("--data-paths", default='/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_1_data_CNP/enhanced_dataset/', help="Data directories containing PKL batches for inference")
+    parser.add_argument("--data-paths", default='/mnt/proj-shared/AI4BGC_7xw/TrainingData/Trendy_1_data_CNP', help="Data directories containing PKL batches for inference")
     parser.add_argument("--file-pattern", default='enhanced_*1_training_data_batch_*.pkl', help="Glob pattern for PKL files")
     parser.add_argument("--output-dir", default='cnp_inference_entire_dataset', help="Output directory for results")
     parser.add_argument("--variable-list", help="Path to variable list file (optional, will auto-detect from config)")
@@ -1208,6 +1337,7 @@ def main():
     parser.add_argument("--strict-loading", action='store_true', default=True, help="Use strict model loading to catch size mismatches early (default: True)")
     parser.add_argument("--debug-vars", action='store_true', help="Print detailed variable names and sample values during preprocessing/inference")
     parser.add_argument("--loader", choices=['auto','pandas','individual'], default='auto', help="Data loader to use (default: auto)")
+    parser.add_argument("--mask-pft-with-gt", action='store_true', default=False, help="Mask PFT1D predictions by GT non-zero mask when available")
     parser.add_argument("--refit-normalization", action='store_true', default=False, help="Refit scalers on inference data (default: False; use training scalers)")
     args = parser.parse_args()
     
@@ -1226,6 +1356,7 @@ def main():
             strict_loading=args.strict_loading
             , debug_vars=args.debug_vars
             , loader=args.loader
+            , mask_pft_with_gt=args.mask_pft_with_gt
         )
         print(f"Inference completed successfully. Results saved to: {output_path}")
         
