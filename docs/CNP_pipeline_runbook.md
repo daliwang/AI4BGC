@@ -55,7 +55,7 @@ python ../../scripts/ai_model_comparison_plot.py  > ai_model_comparison.log 2>&1
 ### 8) Create a new ELM restart file using AI predictions
 
 ```bash
-python ../../scripts/ai_predictions_to_restart.py --variable-list ../../CNP_IO_demo1.txt
+python ../../scripts/ai_predictions_to_restart.py > ai_predictions_to_restart.py 2>&1 &
 ```
 
 Outputs a new restart file derived from
