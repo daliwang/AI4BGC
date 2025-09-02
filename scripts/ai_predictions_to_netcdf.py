@@ -184,7 +184,10 @@ def load_ai_predictions(predictions_dir: Path) -> Dict[str, Any]:
     # Load scalar predictions
     scalar_path = predictions_dir / 'predictions_scalar.csv'
     if scalar_path.exists():
-        preds['scalar'] = pd.read_csv(scalar_path)
+        scalar_df = pd.read_csv(scalar_path)
+        lon, lat = _extract_coords(scalar_df)
+        preds['scalar_coords'] = (lon, lat)
+        preds['scalar'] = _drop_coords(scalar_df)
         print(f"  Loaded scalar predictions: {preds['scalar'].shape}")
         # Print sample locations if available
         if 'Longitude' in preds['scalar'] and 'Latitude' in preds['scalar']:
@@ -195,11 +198,14 @@ def load_ai_predictions(predictions_dir: Path) -> Dict[str, Any]:
     pft_dir = predictions_dir / 'pft_1d_predictions'
     if pft_dir.exists():
         preds['pft_1d'] = {}
+        preds['pft1d_coords'] = {}
         for p in sorted(pft_dir.glob('predictions_*.csv')):
             # Extract variable name from filename (e.g., predictions_Y_tlai.csv -> tlai)
             var_name = p.stem.replace('predictions_Y_', '')
             df = pd.read_csv(p)
-            preds['pft_1d'][var_name] = df
+            lon, lat = _extract_coords(df)
+            preds['pft1d_coords'][var_name] = (lon, lat)
+            preds['pft_1d'][var_name] = _drop_coords(df)
             print(f"  Loaded PFT predictions for {var_name}: {df.shape}")
             # Print sample locations if available
             if 'Longitude' in df and 'Latitude' in df:
@@ -210,11 +216,14 @@ def load_ai_predictions(predictions_dir: Path) -> Dict[str, Any]:
     soil_dir = predictions_dir / 'soil_2d_predictions'
     if soil_dir.exists():
         preds['soil_2d'] = {}
+        preds['soil2d_coords'] = {}
         for p in sorted(soil_dir.glob('predictions_*.csv')):
             # Extract variable name from filename (e.g., predictions_Y_cwdc_vr.csv -> cwdc_vr)
             var_name = p.stem.replace('predictions_Y_', '')
             df = pd.read_csv(p)
-            preds['soil_2d'][var_name] = df
+            lon, lat = _extract_coords(df)
+            preds['soil2d_coords'][var_name] = (lon, lat)
+            preds['soil_2d'][var_name] = _drop_coords(df)
             print(f"  Loaded soil predictions for {var_name}: {df.shape}")
             # Print sample locations if available
             if 'Longitude' in df and 'Latitude' in df:
@@ -373,46 +382,48 @@ def add_soil_variables(ds: xr.Dataset, ai_preds: Dict[str, Any],
         print(f"    Processing soil variable: {var_name}")
         if var_name in ai_preds['soil_2d']:
             soil_df = ai_preds['soil_2d'][var_name]
-            print(f"      Found soil dataframe: {soil_df.shape}")
-            print(f"      Total columns: {len(soil_df.columns)}")
-            print(f"      Expected: 18 columns × 10 layers = 180 columns")
-            print(f"      First few columns: {list(soil_df.columns)[:5]}...")
-            print(f"      Last few columns: {list(soil_df.columns)[-5:]}...")
-            
-            # Soil variables have columns like Y_cwdc_vr_col1_layer1, Y_cwdc_vr_col1_layer2, etc.
-            # We want the first column (col1) and its 10 layers
-            first_col_layer_cols = [c for c in soil_df.columns if c.startswith(f'Y_{var_name}_col1_layer')]
-            print(f"      First column layer columns starting with Y_{var_name}_col1_layer: {len(first_col_layer_cols)}")
-            
-            if first_col_layer_cols:
-                # Sort layer columns numerically
-                def layer_num(col):
-                    try:
-                        return int(col.split('_layer')[-1])
-                    except:
-                        return 999
-                
-                first_col_layer_cols = sorted(first_col_layer_cols, key=layer_num)
-                
-                # Create array with shape (column, levgrnd, gridcell)
-                # This matches what restart_variable_plot.py expects for column/levgrnd variables
-                soil_data = np.zeros((1, 10, len(soil_df)), dtype=float)
-                
-                for i, col in enumerate(first_col_layer_cols):
-                    if i < 10:  # First 10 layers
-                        soil_data[0, i, :] = soil_df[col].values
-                
-                ds[var_name] = xr.DataArray(soil_data, dims=['column', 'levgrnd', 'gridcell'])
-                print(f"      Added {var_name}: {soil_data.shape}")
-                print(f"      First column layer columns found: {len(first_col_layer_cols)}")
-                print(f"      Layer range: {first_col_layer_cols[0]} to {first_col_layer_cols[-1]}")
-            else:
-                print(f"      Warning: No first column layer columns found for {var_name}")
-                print(f"      Available columns: {list(soil_df.columns)[:10]}...")
-                print(f"      Looking for pattern: Y_{var_name}_col1_layer*")
+            # Only use first 10 columns (after dropping long/lat)
+            layer_cols = list(soil_df.columns)[:10]
+            print(f"      Using columns for layers: {layer_cols}")
+            soil_data = np.zeros((1, 10, len(soil_df)), dtype=float)
+            for i, col in enumerate(layer_cols):
+                soil_data[0, i, :] = soil_df[col].values
+            ds[var_name] = xr.DataArray(soil_data, dims=['column', 'levgrnd', 'gridcell'])
+            print(f"      Added {var_name}: {soil_data.shape}")
+            print(f"      First column layer columns found: {len(layer_cols)}")
+            print(f"      Layer range: {layer_cols[0]} to {layer_cols[-1]}")
         else:
             print(f"      Warning: {var_name} not found in soil predictions")
             print(f"      Available soil variables: {list(ai_preds['soil_2d'].keys())}")
+
+
+def _extract_coords(df):
+    for col in ['Longitude', 'Long', 'long']:
+        if col in df.columns:
+            lon = df[col].values
+            break
+    else:
+        lon = None
+    for col in ['Latitude', 'Lat', 'lat']:
+        if col in df.columns:
+            lat = df[col].values
+            break
+    else:
+        lat = None
+    return lon, lat
+
+def _drop_coords(df):
+    for col in ['Longitude', 'Long', 'long', 'Latitude', 'Lat', 'lat']:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+    return df
+
+def _check_coords_match(coords1, coords2, label1, label2):
+    if coords1[0] is None or coords1[1] is None or coords2[0] is None or coords2[1] is None:
+        print(f"  Warning: Missing coordinates for {label1} or {label2}")
+        return
+    if not (np.allclose(coords1[0], coords2[0]) and np.allclose(coords1[1], coords2[1])):
+        raise ValueError(f"Coordinate mismatch between {label1} and {label2}")
 
 
 def main():
@@ -427,7 +438,7 @@ def main():
                        help='Output NetCDF file path')
     parser.add_argument('--examples', action='store_true', 
                        help='Show example usage and exit')
-    parser.add_argument('--wrap-longitude', action='store_true', default=True,
+    parser.add_argument('--wrap-longitude', action='store_true', default=False,
                        help='Wrap longitudes from 0–360 to -180–180 (default: on). Use --no-wrap-longitude to disable if shell supports).')
     
     args = parser.parse_args()
@@ -452,7 +463,7 @@ Examples:
         parser.error(f'AI predictions directory not found: {ai_predictions_dir}')
     
     variable_list_path = args.variable_list
-    if not Path(variable_list_path).exists():
+    if variable_list_path and not Path(variable_list_path).exists():
         parser.error(f'Variable list file not found: {variable_list_path}')
     
     output_path = Path(args.output)
@@ -512,6 +523,14 @@ Examples:
         except Exception as _e:
             print(f"  Warning: Failed to wrap longitudes: {_e}")
     
+    # Check coordinate matching
+    if 'scalar_coords' in ai_preds and 'pft1d_coords' in ai_preds:
+        for var, coords in ai_preds['pft1d_coords'].items():
+            _check_coords_match(ai_preds['scalar_coords'], coords, 'scalar', f'pft1d:{var}')
+    if 'scalar_coords' in ai_preds and 'soil2d_coords' in ai_preds:
+        for var, coords in ai_preds['soil2d_coords'].items():
+            _check_coords_match(ai_preds['scalar_coords'], coords, 'scalar', f'soil2d:{var}')
+
     # Create NetCDF structure
     ds = create_netcdf_structure(ai_preds, variable_list, output_path)
     

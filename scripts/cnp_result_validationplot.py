@@ -204,12 +204,18 @@ def analyze_1d_new_structure(results_dir, label, out_dir, stats_data, plot_scatt
         if not os.path.exists(pred_file):
             print(f"Missing prediction file for {var_name}: {pred_file}")
             continue
-            
+        
         print(f"Analyzing variable: {var_name}")
         
         # Read data
         gt_data = pd.read_csv(gt_file)
         pred_data = pd.read_csv(pred_file)
+        # Drop 'long' and 'lat' columns if present
+        for col in ['long', 'lat']:
+            if col in gt_data.columns:
+                gt_data = gt_data.drop(columns=[col])
+            if col in pred_data.columns:
+                pred_data = pred_data.drop(columns=[col])
         
         # Ensure same shape
         if gt_data.shape != pred_data.shape:
@@ -220,19 +226,19 @@ def analyze_1d_new_structure(results_dir, label, out_dir, stats_data, plot_scatt
         num_pfts = gt_data.shape[1]
         print(f"  {var_name}: {num_pfts} PFT columns")
         
-        for pft_idx in range(num_pfts):
-            gt_col = gt_data.iloc[:, pft_idx].values
-            pred_col = pred_data.iloc[:, pft_idx].values
+        for pft_idx, col_name in enumerate(gt_data.columns):
+            gt_col = gt_data[col_name].values
+            pred_col = pred_data[col_name].values
             
             # Skip if all values are NaN
             if np.all(np.isnan(gt_col)) or np.all(np.isnan(pred_col)):
                 continue
-                
+            
             # Remove NaN pairs
             valid_mask = ~(np.isnan(gt_col) | np.isnan(pred_col))
             if np.sum(valid_mask) < 3:  # Relax threshold to allow small samples
                 continue
-                
+            
             gt_valid = gt_col[valid_mask]
             pred_valid = pred_col[valid_mask]
             
@@ -245,7 +251,7 @@ def analyze_1d_new_structure(results_dir, label, out_dir, stats_data, plot_scatt
             mae = mean_absolute_error(gt_valid, pred_valid)
             r2 = r2_score(gt_valid, pred_valid)
             
-            print(f"    PFT {pft_idx+1}: RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
+            print(f"    {col_name}: RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
             print(f"      GT - min: {gt_stats['min']:.6g}, max: {gt_stats['max']:.6g}, sum: {gt_stats['sum']:.6g}")
             print(f"      Pred - min: {pred_stats['min']:.6g}, max: {pred_stats['max']:.6g}, sum: {pred_stats['sum']:.6g}")
             
@@ -253,15 +259,15 @@ def analyze_1d_new_structure(results_dir, label, out_dir, stats_data, plot_scatt
             if plot_scatter:
                 plot_gt_vs_pred(
                     gt_valid, pred_valid, 
-                    f"{label} {var_name} PFT{pft_idx+1} GT vs Pred", 
-                    os.path.join(out_dir, f"{label}_{var_name}_PFT{pft_idx+1}_gt_vs_pred.png")
+                    f"{label} {col_name} GT vs Pred", 
+                    os.path.join(out_dir, f"{label}_{col_name}_gt_vs_pred.png")
                 )
             
             # Collect stats
             stats_data.append({
                 'type': '1D',
                 'variable': var_name,
-                'pft': pft_idx+1,
+                'pft': col_name,
                 'rmse': rmse,
                 'mae': mae,
                 'r2': r2,
@@ -277,6 +283,12 @@ def analyze_1d(gt_path, pred_path, label, out_dir, results_dir):
     """Legacy function for old single-file 1D format - kept for compatibility"""
     gt = pd.read_csv(gt_path)
     pred = pd.read_csv(pred_path)
+    # Drop 'long' and 'lat' columns if present
+    for col in ['long', 'lat']:
+        if col in gt.columns:
+            gt = gt.drop(columns=[col])
+        if col in pred.columns:
+            pred = pred.drop(columns=[col])
     # Read variable names from cnp_config.json
     config_path = os.path.join(results_dir, 'cnp_config.json')
     if os.path.exists(config_path):
@@ -306,20 +318,19 @@ def analyze_1d(gt_path, pred_path, label, out_dir, results_dir):
         for j in range(num_pfts):
             gt_col = gt_reshaped[:, i, j]
             pred_col = pred_reshaped[:, i, j]
-            
+            # Use column name if available
+            col_name = gt.columns[i * num_pfts + j] if (i * num_pfts + j) < len(gt.columns) else f"{var}_pft{j+1}"
             # Calculate statistics
             gt_stats = {'min': np.nanmin(gt_col), 'max': np.nanmax(gt_col), 'sum': np.nansum(gt_col)}
             pred_stats = {'min': np.nanmin(pred_col), 'max': np.nanmax(pred_col), 'sum': np.nansum(pred_col)}
-            
             rmse = np.sqrt(mean_squared_error(gt_col, pred_col))
             mae = mean_absolute_error(gt_col, pred_col)
             r2 = r2_score(gt_col, pred_col)
-            print(f"{label} - {var} (PFT {j+1}): RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
+            print(f"{label} - {col_name}: RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
             print(f"  GT - min: {gt_stats['min']:.6g}, max: {gt_stats['max']:.6g}, sum: {gt_stats['sum']:.6g}")
             print(f"  Pred - min: {pred_stats['min']:.6g}, max: {pred_stats['max']:.6g}, sum: {pred_stats['sum']:.6g}")
-            
-            # Plot only for the first column (PFT 1) as the real PFT0 has been dropped in training
-            plot_gt_vs_pred(gt_col, pred_col, f"{label} {var} PFT{j+1} GT vs Pred", os.path.join(out_dir, f"{label}_{var}_PFT{j+1}_gt_vs_pred.png"))
+            # Plot using column name
+            plot_gt_vs_pred(gt_col, pred_col, f"{label} {col_name} GT vs Pred", os.path.join(out_dir, f"{label}_{col_name}_gt_vs_pred.png"))
 
 def analyze_2d_new_structure(results_dir, label, out_dir, stats_data, plot_scatter=True):
     """Analyze 2D data using the new directory structure with individual variable files"""
@@ -354,15 +365,21 @@ def analyze_2d_new_structure(results_dir, label, out_dir, stats_data, plot_scatt
         # Read data
         gt_data = pd.read_csv(gt_file)
         pred_data = pd.read_csv(pred_file)
+        # Drop 'long' and 'lat' columns if present
+        for col in ['long', 'lat', 'Long', 'Lat', 'Longitude', 'Latitude']:
+            if col in gt_data.columns:
+                gt_data = gt_data.drop(columns=[col])
+            if col in pred_data.columns:
+                pred_data = pred_data.drop(columns=[col])
         
         # Ensure same shape
         if gt_data.shape != pred_data.shape:
             print(f"Shape mismatch for {var_name}: GT {gt_data.shape} vs Pred {pred_data.shape}")
             continue
         
-        # 2D data has 18 columns × 10 layers = 180 total columns (only first 10 layers predicted)
+        # 2D data has 1 columns × 10 layers = 10 total columns (only first 10 layers predicted)
         total_columns = gt_data.shape[1]
-        expected_columns = 18 * 10  # 180
+        expected_columns = 1 * 10  # 10
         
         if total_columns != expected_columns:
             print(f"  Warning: Expected {expected_columns} columns for 2D data, but found {total_columns}")
@@ -372,7 +389,7 @@ def analyze_2d_new_structure(results_dir, label, out_dir, stats_data, plot_scatt
             num_columns = total_columns // 10
             print(f"  Assuming {num_columns} columns with 10 layers each")
         else:
-            num_columns = 18
+            num_columns = 1
             print(f"  {var_name}: {num_columns} columns, each with 10 layers ({total_columns} total columns)")
         
         # Analyze all 10 layers of the first column (new prediction format stores only first column)
