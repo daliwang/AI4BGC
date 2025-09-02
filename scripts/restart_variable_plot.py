@@ -22,7 +22,7 @@ DATA_DIR = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/'  # for ccsi_gpu_node1
 
 # Default file paths
 DEFAULT_FILE_OLD = DATA_DIR + 'original_780_spinup_from_modelsimulation.nc'
-DEFAULT_FILE_NEW = './updated_restart_CNP_IO_demo1_original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc'
+DEFAULT_FILE_NEW = './updated_restart_CNP_IO_demo_original_20250408_trendytest_ICB1850CNPRDCTCBC.elm.r.0021-01-01-00000.nc'
 
 # Model-specific file paths
 MODEL_FILES = {

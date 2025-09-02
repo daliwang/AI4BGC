@@ -23,6 +23,8 @@ from typing import Dict, Any, List, Optional
 import shutil
 import netCDF4 as nc
 import sys
+import json
+import re
 
 # Project imports
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -120,7 +122,25 @@ def create_spatial_mapping(ds_ai: xr.Dataset, ds_model: xr.Dataset) -> tuple[np.
     return ai_to_model_mapping, variable_mapping
 
 
-
+def auto_detect_variable_list(ai_predictions_path: Path) -> list:
+    # Search for cnp_config.json in ai_predictions_path and its parents
+    for parent in [ai_predictions_path.parent] + list(ai_predictions_path.parents):
+        config_path = parent / 'cnp_config.json'
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                data_info = config.get('data_info', {})
+                vars_1d = data_info.get('variables_1d_pft', [])
+                vars_2d = data_info.get('variables_2d_soil', [])
+                print(f"Auto-detected variables from {config_path}")
+                print(f"  1D PFT variables: {vars_1d}")
+                print(f"  2D soil variables: {vars_2d}")
+                return list(vars_1d) + list(vars_2d)
+            except Exception as e:
+                print(f"Warning: Failed to parse {config_path}: {e}")
+    print("Warning: Could not auto-detect variable list. No variables will be updated.")
+    return []
 
 
 def create_updated_restart_file(restart_file_path: Path, output_path: Path, 
@@ -223,6 +243,41 @@ def create_updated_restart_file(restart_file_path: Path, output_path: Path,
     print(f"File size: {output_path.stat().st_size / (1024*1024):.1f} MB")
 
 
+def get_varlist_name_from_config(ai_predictions_path):
+    for parent in [ai_predictions_path.parent] + list(ai_predictions_path.parents):
+        config_path = parent / 'cnp_config.json'
+        if config_path.exists():
+            return config_path.stem
+    return 'auto'
+
+
+def get_varlist_name_from_log_or_config(ai_predictions_path):
+    # 1. Search for most recent cnp_training_*.log in run dir or parents
+    run_dir = ai_predictions_path.parent
+    log_file = None
+    for parent in [run_dir] + list(run_dir.parents):
+        logs = sorted(parent.glob('cnp_training_*.log'), key=lambda p: p.stat().st_mtime, reverse=True)
+        if logs:
+            log_file = logs[0]
+            break
+    if log_file:
+        try:
+            with open(log_file, 'r') as f:
+                for line in f:
+                    m = re.search(r'variable list file: (\S+)', line)
+                    if m:
+                        return Path(m.group(1)).stem
+        except Exception as e:
+            print(f"Warning: Failed to parse {log_file}: {e}")
+    # 2. Fallback to config.json
+    for parent in [run_dir] + list(run_dir.parents):
+        config_path = parent / 'cnp_config.json'
+        if config_path.exists():
+            return config_path.stem
+    # 3. Fallback
+    return 'auto'
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Insert AI predictions (PFT1D and soil2D variables only) into model restart file to create updated restart file',
@@ -230,23 +285,23 @@ def main():
         epilog="""
 Examples:
   # Update restart file with AI predictions
-  python ai_predictions_to_restart.py \\
-    --ai-predictions ai_predictions_for_plotting.nc \\
-    --restart-file model_restart.nc \\
+  python ai_predictions_to_restart.py \
+    --ai-predictions ai_predictions_for_plotting.nc \
+    --restart-file model_restart.nc \
     --output updated_restart.nc
 
   # Use with specific variable list
-  python ai_predictions_to_restart.py \\
-    --ai-predictions ai_predictions_for_plotting.nc \\
-    --restart-file model_restart.nc \\
-    --output updated_restart.nc \\
+  python ai_predictions_to_restart.py \
+    --ai-predictions ai_predictions_for_plotting.nc \
+    --restart-file model_restart.nc \
+    --output updated_restart.nc \
     --variable-list CNP_IO_demo1.txt
 
   # Preview changes without saving
-  python ai_predictions_to_restart.py \\
-    --ai-predictions ai_predictions_for_plotting.nc \\
-    --restart-file model_restart.nc \\
-    --output updated_restart.nc \\
+  python ai_predictions_to_restart.py \
+    --ai-predictions ai_predictions_for_plotting.nc \
+    --restart-file model_restart.nc \
+    --output updated_restart.nc \
     --preview-only
         """
     )
@@ -257,8 +312,8 @@ Examples:
                        help='Path to model restart file to update')
     parser.add_argument('--output', default=None,
                        help='Output path for updated restart file [default: auto-generated based on variable list]')
-    parser.add_argument('--variable-list', type=str,
-                       help='Path to CNP_IO_list file to specify which variables to update')
+    parser.add_argument('--variable-list', type=str, required=False,
+                       help='Path to CNP_IO_list file to specify which variables to update (optional)')
     parser.add_argument('--preview-only', action='store_true',
                        help='Preview changes without saving updated restart file')
     parser.add_argument('--backup', action='store_true',
@@ -276,16 +331,11 @@ Examples:
     if not restart_file_path.exists():
         parser.error(f'Restart file not found: {restart_file_path}')
     
-    # Generate output path based on variable list if not specified
+    # Generate output path based on log/config name if --output is not specified
     if args.output is None:
-        if args.variable_list:
-            # Extract variable list name and create descriptive output filename
-            var_list_name = Path(args.variable_list).stem
-            restart_name = Path(args.restart_file).stem
-            output_path = Path(f"updated_restart_{var_list_name}_{restart_name}.nc")
-        else:
-            # Fallback to default name
-            output_path = Path("updated_restart.nc")
+        varlist_name = get_varlist_name_from_log_or_config(ai_predictions_path)
+        restart_name = Path(args.restart_file).stem
+        output_path = Path(f"updated_restart_{varlist_name}_{restart_name}.nc")
     else:
         output_path = Path(args.output)
     
@@ -305,7 +355,7 @@ Examples:
     # Create spatial mapping
     ai_to_model_mapping, variable_mapping = create_spatial_mapping(ds_ai, ds_model)
     
-    # Parse CNP_IO list if provided
+    # Parse CNP_IO list if provided, else auto-detect
     cnp_io_variables = []
     if args.variable_list:
         var_list_path = Path(args.variable_list)
@@ -316,7 +366,6 @@ Examples:
                     cnp_io_variables.extend(parsed_vars['pft_1d_variables'])
                 if 'variables_2d_soil' in parsed_vars:
                     cnp_io_variables.extend(parsed_vars['variables_2d_soil'])
-                
                 print(f"  Variables to update: {cnp_io_variables}")
             except Exception as e:
                 print(f"  Warning: Could not parse variable list: {e}")
@@ -327,8 +376,8 @@ Examples:
             parsed_vars = None
             cnp_io_variables = []
     else:
-        parsed_vars = None
-        cnp_io_variables = []
+        # Auto-detect from config.json
+        cnp_io_variables = auto_detect_variable_list(Path(args.ai_predictions))
     
     # Note: We only update variables in the CNP_IO list
     # All other variables (including timemgr_rst_nstep_rad_prev) remain completely unchanged

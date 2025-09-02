@@ -10,6 +10,7 @@ import argparse
 import glob
 from pathlib import Path
 import sys
+import json
 
 # Project imports
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -18,10 +19,6 @@ from config.training_config import parse_cnp_io_list
 # Default file paths
 DATA_DIR = '/mnt/proj-shared/AI4BGC_7xw/AI4BGC/ELM_data/'
 DEFAULT_FILE_OLD = DATA_DIR + 'original_780_spinup_from_modelsimulation.nc'
-
-# Default layers and PFTs to plot
-LEVGRND_LAYERS = [0, 5, 9]  # layers for (column, levgrnd)-type variables (0,9)
-PFT_PICK_LIST = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # PFT0-PFT15 (representing PFT1-PFT16)
 
 LABEL_NEW = "AI Generated"
 LABEL_OLD = "Original Model"
@@ -208,20 +205,44 @@ def _plot_tripanel(var, label_suffix, lon, lat, data_new, data_old, out_dir,
     plt.close()
     print(f"  Saved: {path}")
 
+def auto_detect_variable_list_from_config(ai_restart_path: str):
+    run_dir = Path(ai_restart_path).parent if ai_restart_path else Path('.')
+    for parent in [run_dir] + list(run_dir.parents):
+        config_path = parent / 'cnp_config.json'
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                data_info = config.get('data_info', {})
+                vars_1d = data_info.get('variables_1d_pft', [])
+                # Try both keys for 2d soil variables
+                vars_2d = data_info.get('variables_2d_soil', [])
+                if not vars_2d:
+                    vars_2d = data_info.get('x_list_columns_2d', [])
+                print(f"Auto-detected variables from {config_path}")
+                print(f"  1D PFT variables: {vars_1d}")
+                print(f"  2D soil variables: {vars_2d}")
+                return list(vars_1d), list(vars_2d)
+            except Exception as e:
+                print(f"Warning: Failed to parse {config_path}: {e}")
+    print("Warning: Could not auto-detect variable list. No variables will be plotted.")
+    return [], []
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Compare AI-enhanced restart file with original model file')
-    parser.add_argument('--variable-list', type=str, required=True,
-                       help='Path to CNP_IO list file')
+    parser.add_argument('--variable-list', type=str, required=False,
+                       help='Path to CNP_IO list file (optional, will auto-detect from config.json if not provided)')
     parser.add_argument('--ai-restart', type=str, default=None,
                        help='Path to AI-enhanced restart file (auto-detected if not specified)')
     parser.add_argument('--original-restart', type=str, default=None,
-                       help='Path to original model restart file (default: 2025 model)')
-    parser.add_argument('--layers', type=str, default='0,5,9',
-                       help='Comma-separated list of soil layers to plot (default: 0,5,9)')
-    parser.add_argument('--pfts', type=str, default='1,2,4,5,6,7,8,9',
+                       help='Path to original model restart file (default: 780 year model results)')
+    parser.add_argument('--layers', type=str, default='0,3,5',
+                       help='Comma-separated list of soil layers to plot (default: 0,3,5)')
+    parser.add_argument('--pfts', type=str, default='1,2,4,5',
                        help='Comma-separated list of PFTs to plot (default: all PFT0-PFT15)')
-    
+    parser.add_argument('--plot-all', action='store_true',
+                       help='If set, plot all variables for all 10 layers (0-9) and all 16 PFTs (1-16, skip pft0)')
     return parser.parse_args()
 
 def find_ai_restart_file():
@@ -239,10 +260,15 @@ def find_ai_restart_file():
 def main():
     args = parse_arguments()
     
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     # Parse layers and PFTs
     global LEVGRND_LAYERS, PFT_PICK_LIST
-    LEVGRND_LAYERS = [int(x.strip()) for x in args.layers.split(',')]
-    PFT_PICK_LIST = [int(x.strip()) for x in args.pfts.split(',')]
+    if args.plot_all:
+        LEVGRND_LAYERS = list(range(10))  # 0-9
+        PFT_PICK_LIST = list(range(16))   # 0-15 (will skip pft0 in plotting)
+    else:
+        LEVGRND_LAYERS = [int(x.strip()) for x in args.layers.split(',')]
+        PFT_PICK_LIST = [int(x.strip()) for x in args.pfts.split(',')]
     
     # Set file paths
     if args.ai_restart:
@@ -265,26 +291,27 @@ def main():
     print("-" * 80)
     
     # Parse CNP_IO list to get variables
-    print("Parsing CNP_IO list...")
-    cnp_io_vars = parse_cnp_io_list(Path(args.variable_list))
-    
-    # Extract variable names from the parsed structure
-    pft_1d_variables = cnp_io_vars.get('pft_1d_variables', [])
-    variables_2d_soil = cnp_io_vars.get('variables_2d_soil', [])
-    
+    if args.variable_list:
+        print("Parsing CNP_IO list...")
+        cnp_io_vars = parse_cnp_io_list(Path(args.variable_list))
+        pft_1d_variables = cnp_io_vars.get('pft_1d_variables', [])
+        variables_2d_soil = cnp_io_vars.get('variables_2d_soil', [])
+        if not variables_2d_soil:
+            variables_2d_soil = cnp_io_vars.get('x_list_columns_2d', [])
+        print(f"  PFT1D: {pft_1d_variables}")
+        print(f"  Soil2D: {variables_2d_soil}")
+    else:
+        print("Auto-detecting CNP_IO variables from config.json...")
+        pft_1d_variables, variables_2d_soil = auto_detect_variable_list_from_config(FILE_NEW)
     # Combine all variables to plot
     VARIABLES = pft_1d_variables + variables_2d_soil
-    
     if not VARIABLES:
-        print("Error: No variables found in CNP_IO list")
+        print("Error: No variables found in CNP_IO list or config.json")
         return
-    
     print(f"Variables to plot: {VARIABLES}")
     print(f"  PFT1D: {pft_1d_variables}")
     print(f"  Soil2D: {variables_2d_soil}")
     
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
     ds_new = xr.open_dataset(FILE_NEW)
     ds_old = xr.open_dataset(FILE_OLD)
 
@@ -331,8 +358,17 @@ def main():
                     if len(cols) == 0:
                         continue
                     c0 = cols[0]  # First column only
-                    new_grid[g] = vals_new[c0, lev]
+                    # Use column 0 for AI prediction file if it has only one column
+                    if vals_new.shape[0] == 1:
+                        new_grid[g] = vals_new[0, lev]
+                    else:
+                        new_grid[g] = vals_new[c0, lev]
+                    # Always use mapping for old/model file
                     old_grid[g] = vals_old[c0, lev]
+
+                # Debug print for this layer
+                print(f"[DEBUG] {var} lev{lev}: new_grid min={np.nanmin(new_grid)}, max={np.nanmax(new_grid)}, mean={np.nanmean(new_grid)}, sample={new_grid[:10]}")
+                print(f"[DEBUG] {var} lev{lev}: old_grid min={np.nanmin(old_grid)}, max={np.nanmax(old_grid)}, mean={np.nanmean(old_grid)}, sample={old_grid[:10]}")
 
                 _plot_tripanel(var, f"_lev{lev}", grid_lon, grid_lat, new_grid, old_grid, OUTPUT_DIR,
                                label_new=LABEL_NEW, label_old=LABEL_OLD)
@@ -348,7 +384,8 @@ def main():
                 if k < 0 or k >= da_new_p.sizes["pft"]:
                     print(f"  PFT {k} out of range, skipped")
                     continue
-                    
+                if args.plot_all and k == 0:
+                    continue  # skip pft0 for plot-all
                 new_grid = np.full(n_grid, np.nan, dtype=float)
                 old_grid = np.full(n_grid, np.nan, dtype=float)
 
@@ -392,17 +429,11 @@ if __name__ == "__main__":
     print("USAGE EXAMPLES:")
     print("="*60)
     print("1. Basic usage with auto-detection:")
-    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt")
+    print("   python ai_restart_comparison.py")
     print()
-    print("2. Specify custom AI restart file:")
-    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --ai-restart /path/to/ai_restart.nc")
+    print("2. Plot all variables for all 10 layers (0-9) and all 16 PFTs (1-16, skip pft0):")
+    print("   python ai_restart_comparison.py --plot-all")
     print()
-    print("3. Specify custom original restart file:")
-    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --original-restart /path/to/original.nc")
-    print()
-    print("4. Custom layers and PFTs:")
-    print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --layers 0,2,4,6,8 --pfts 0,1,2,3")
-    print()
-    print("5. Full custom configuration:")
+    print("3. Full custom configuration:")
     print("   python ai_restart_comparison.py --variable-list ../../CNP_IO_demo1.txt --ai-restart ai_file.nc --original-restart orig_file.nc --layers 0,5,9 --pfts 0,1,2,3,4,5")
     print("="*60)

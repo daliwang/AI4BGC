@@ -84,12 +84,15 @@ python ../../scripts/ai_model_comparison_plot.py  > ai_model_comparison.log 2>&1
 
 8) Create a new ELM restart file using AI predictions:
 ```bash
-python ../../scripts/ai_predictions_to_restart.py --variable-list ../../CNP_IO_demo.txt
+python ../../scripts/ai_predictions_to_restart.py > ai_prediction_to_restart.log 2>&1 &
 ```
 
 9) Compare restart files (optionally inspect with `restart_variable_plot.py`):
 ```bash
-python ../../scripts/ai_restart_comparison.py --variable-list ../../CNP_IO_demo.txt --layers 0,5,9 --pfts 0,1,2,3,4,5
+python ../../scripts/ai_restart_comparison.py > ai_restart_comparison.log 2>&1 &
+
+# Optional: add --plot-all for all the pfts and layers
+
 # Optional: ../../scripts/restart_variable_plot.py
 ```
 

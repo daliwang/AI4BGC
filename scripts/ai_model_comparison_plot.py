@@ -30,7 +30,7 @@ LEVGRND_LAYERS = [0, 4, 9]  # Layers 0, 4, 9 (corresponding to AI layers 1, 5, 1
 
 # PFTs to plot (AI has PFT1-16, model has PFT0-16)
 # Note: AI PFT0 = Model PFT1, AI PFT1 = Model PFT2, etc.
-PFT_PICK_LIST = [0, 1, 2, 3, 4, 5]  # PFT1, PFT2, PFT3, PFT4, PFT5 (0-indexed, so 0=PFT1, 1=PFT2, etc.)
+PFT_PICK_LIST = [0, 1, 2, 3, 4]  # PFT1, PFT2, PFT3, PFT4, PFT5 (0-indexed, so 0=PFT1, 1=PFT2, etc.)
 
 def _safe_get(ds, name):
     """Safely get a variable from dataset, with error handling."""

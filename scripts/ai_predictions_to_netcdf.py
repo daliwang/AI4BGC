@@ -313,71 +313,63 @@ def add_scalar_variables(ds: xr.Dataset, ai_preds: Dict[str, Any],
             print(f"  Added {var_name}: {values.shape}")
 
 
-def add_pft_variables(ds: xr.Dataset, ai_preds: Dict[str, Any], 
-                     variable_list: Dict[str, List[str]]) -> None:
-    """Add PFT variables to the dataset."""
+def add_pft_variables(ds: xr.Dataset, ai_preds: Dict[str, Any], variable_list: Dict[str, List[str]]) -> None:
+    """Add PFT variables to the dataset (reverted to previous logic)."""
     if 'pft_1d' not in ai_preds:
         print("  Warning: No PFT predictions found in ai_preds")
         print(f"    Available keys: {list(ai_preds.keys())}")
         return
-    
+
     print("Adding PFT variables...")
     print(f"  PFT variables to add: {variable_list['pft1d']}")
     print(f"  Available PFT predictions: {list(ai_preds['pft_1d'].keys())}")
-    
+
     for var_name in variable_list['pft1d']:
         print(f"    Processing PFT variable: {var_name}")
         if var_name in ai_preds['pft_1d']:
             pft_df = ai_preds['pft_1d'][var_name]
-            print(f"      Found PFT dataframe: {pft_df.shape}")
-            print(f"      Columns: {list(pft_df.columns)[:5]}...")  # Show first 5 columns
-            
-            # PFT variables should have columns like Y_leafc_pft1, Y_leafc_pft2, etc.
+            # Find PFT columns (should be 16 for PFT1-16)
             pft_cols = [c for c in pft_df.columns if c.startswith(f'Y_{var_name}_pft')]
-            print(f"      PFT columns starting with Y_{var_name}_pft: {len(pft_cols)}")
-            
-            if pft_cols:
-                # Sort PFT columns numerically
-                def pft_num(col):
-                    try:
-                        return int(col.split('_pft')[-1])
-                    except:
-                        return 999
-                
-                pft_cols = sorted(pft_cols, key=pft_num)
-                
-                # Create array with shape (pft, gridcell)
-                # This matches what restart_variable_plot.py expects for PFT variables
-                pft_data = np.zeros((16, len(pft_df)), dtype=float)
-                
-                for i, col in enumerate(pft_cols):
-                    if i < 16:  # PFT1-16
-                        pft_data[i, :] = pft_df[col].values
-                
-                ds[var_name] = xr.DataArray(pft_data, dims=['pft', 'gridcell'])
-                print(f"      Added {var_name}: {pft_data.shape}")
-                print(f"      PFT columns found: {len(pft_cols)}")
-                print(f"      PFT range: {pft_cols[0]} to {pft_cols[-1]}")
-            else:
-                print(f"      Warning: No PFT columns found for {var_name}")
-                print(f"      Available columns: {list(pft_df.columns)[:10]}...")
+            pft_cols = sorted(pft_cols, key=lambda x: int(x.split('_pft')[-1]))
+            ai_data = np.stack([pft_df[col].values for col in pft_cols], axis=0)  # shape: (16, n_gridcell)
+            ds[var_name] = xr.DataArray(ai_data, dims=['pft', 'gridcell'])
+            print(f"      Updated {var_name} in NetCDF with shape {ai_data.shape}.")
         else:
             print(f"      Warning: {var_name} not found in PFT predictions")
             print(f"      Available PFT variables: {list(ai_preds['pft_1d'].keys())}")
 
 
-def add_soil_variables(ds: xr.Dataset, ai_preds: Dict[str, Any], 
-                      variable_list: Dict[str, List[str]]) -> None:
-    """Add soil 2D variables to the dataset."""
+def add_soil_variables(ds: xr.Dataset, ai_preds: Dict[str, Any], variable_list: Dict[str, List[str]]) -> None:
+    """Add soil 2D variables to the dataset using correct gridcell-column mapping."""
     if 'soil_2d' not in ai_preds:
         print("  Warning: No soil predictions found in ai_preds")
         print(f"    Available keys: {list(ai_preds.keys())}")
         return
-    
-    print("Adding soil 2D variables...")
+
+    print("Adding soil 2D variables with gridcell-column mapping...")
     print(f"  Soil variables to add: {variable_list['soil2d']}")
     print(f"  Available soil predictions: {list(ai_preds['soil_2d'].keys())}")
-    
+
+    # Get mapping from restart file
+    if 'cols1d_gridcell_index' in ds and 'gridcell' in ds.dims:
+        n_grid = ds.sizes['gridcell']
+        col2grid = ds['cols1d_gridcell_index'].values
+        col2grid = np.asarray(col2grid, dtype=np.int64)
+        # Convert to zero-based index if needed
+        is_one_based = (np.any(col2grid == n_grid) or (np.nanmin(col2grid) == 1))
+        if is_one_based:
+            col2grid = col2grid - 1
+        col2grid[(col2grid < 0) | (col2grid >= n_grid)] = -1
+        # Build grid_to_cols mapping
+        grid_to_cols = [[] for _ in range(n_grid)]
+        for idx, g in enumerate(col2grid):
+            if 0 <= g < n_grid:
+                grid_to_cols[g].append(idx)
+    else:
+        print("  Warning: Could not find cols1d_gridcell_index in ds; fallback to old logic.")
+        grid_to_cols = None
+        n_grid = None
+
     for var_name in variable_list['soil2d']:
         print(f"    Processing soil variable: {var_name}")
         if var_name in ai_preds['soil_2d']:
@@ -385,13 +377,27 @@ def add_soil_variables(ds: xr.Dataset, ai_preds: Dict[str, Any],
             # Only use first 10 columns (after dropping long/lat)
             layer_cols = list(soil_df.columns)[:10]
             print(f"      Using columns for layers: {layer_cols}")
-            soil_data = np.zeros((1, 10, len(soil_df)), dtype=float)
-            for i, col in enumerate(layer_cols):
-                soil_data[0, i, :] = soil_df[col].values
-            ds[var_name] = xr.DataArray(soil_data, dims=['column', 'levgrnd', 'gridcell'])
-            print(f"      Added {var_name}: {soil_data.shape}")
-            print(f"      First column layer columns found: {len(layer_cols)}")
-            print(f"      Layer range: {layer_cols[0]} to {layer_cols[-1]}")
+            # Prepare data as [n_gridcell, 10]
+            ai_data = np.stack([soil_df[col].values for col in layer_cols], axis=1)  # shape: (n_gridcell, 10)
+            # Prepare output array (column, levgrnd)
+            if grid_to_cols is not None and n_grid is not None:
+                n_col = sum([len(cols) for cols in grid_to_cols])
+                n_lev = ai_data.shape[1]
+                soil_data = np.zeros((n_col, n_lev), dtype=float)
+                for g in range(ai_data.shape[0]):
+                    cols = grid_to_cols[g]
+                    if len(cols) == 0:
+                        continue
+                    c0 = cols[0]  # First column for this gridcell
+                    for lev in range(min(10, ai_data.shape[1])):
+                        soil_data[c0, lev] = ai_data[g, lev]
+            else:
+                # fallback: old logic (single column)
+                soil_data = np.zeros((1, ai_data.shape[1]), dtype=float)
+                for lev in range(min(10, ai_data.shape[1])):
+                    soil_data[0, lev] = ai_data[0, lev]
+            ds[var_name] = xr.DataArray(soil_data, dims=['column', 'levgrnd'])
+            print(f"      Updated {var_name} in NetCDF with mapped values.")
         else:
             print(f"      Warning: {var_name} not found in soil predictions")
             print(f"      Available soil variables: {list(ai_preds['soil_2d'].keys())}")
