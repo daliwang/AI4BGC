@@ -90,6 +90,36 @@ class IndividualScalerManager:
         
         return normalized_data
     
+    def transform_scalar(self, data: np.ndarray, variable_names: List[str]) -> np.ndarray:
+        """
+        Transform scalar data using existing fitted scalers (no fitting).
+        
+        Args:
+            data: Input data of shape (samples, variables)
+            variable_names: List of variable names
+            
+        Returns:
+            Normalized data of same shape as input
+        """
+        if data.shape[1] != len(variable_names):
+            raise ValueError(f"Data has {data.shape[1]} columns but {len(variable_names)} variable names provided")
+        
+        normalized_data = np.zeros_like(data)
+        
+        for i, var_name in enumerate(variable_names):
+            scaler_key = f'scalar_{var_name}'
+            
+            if scaler_key not in self.scalers:
+                raise KeyError(f"Scaler not found for scalar: {var_name}. Available keys: {list(self.scalers.keys())}")
+            
+            scaler = self.scalers[scaler_key]
+            var_data = data[:, i:i+1]  # Single column
+            
+            # Transform using existing scaler
+            normalized_data[:, i:i+1] = scaler.transform(var_data)
+        
+        return normalized_data
+    
     def inverse_transform_scalar(self, data: np.ndarray, variable_names: List[str]) -> np.ndarray:
         """
         Inverse transform each variable using its individual scaler.
@@ -162,6 +192,40 @@ class IndividualScalerManager:
                 }
                 
                 logger.info(f"Created individual scaler for PFT1D: {pft_name}_{var_name}")
+        
+        return normalized_data
+    
+    def transform_pft_1d(self, data: np.ndarray, pft_names: List[str], variable_names: List[str]) -> np.ndarray:
+        """
+        Transform PFT1D data using existing fitted scalers (no fitting).
+        
+        Args:
+            data: Input data of shape (samples, pfts, variables)
+            pft_names: List of PFT names
+            variable_names: List of variable names
+            
+        Returns:
+            Normalized data of same shape as input
+        """
+        if data.shape[1] != len(pft_names) or data.shape[2] != len(variable_names):
+            raise ValueError(f"Data shape {data.shape} doesn't match PFT names ({len(pft_names)}) and variable names ({len(variable_names)})")
+        
+        normalized_data = np.zeros_like(data)
+        
+        for pft_idx, pft_name in enumerate(pft_names):
+            for var_idx, var_name in enumerate(variable_names):
+                scaler_key = f'pft1d_{pft_name}_{var_name}'
+                
+                if scaler_key not in self.scalers:
+                    raise KeyError(f"Scaler not found for PFT1D: {pft_name}_{var_name}. Available keys: {list(self.scalers.keys())}")
+                
+                scaler = self.scalers[scaler_key]
+                
+                # Extract data for this PFT-variable combination
+                var_data = data[:, pft_idx, var_idx:var_idx+1]
+                
+                # Transform using existing scaler
+                normalized_data[:, pft_idx, var_idx:var_idx+1] = scaler.transform(var_data)
         
         return normalized_data
     
@@ -257,6 +321,46 @@ class IndividualScalerManager:
                 }
                 
                 logger.info(f"Created individual scaler for Soil2D: {var_name}_layer{layer_idx}")
+        
+        return normalized_data
+    
+    def transform_soil_2d(self, data: np.ndarray, variable_names: List[str], num_layers: int) -> np.ndarray:
+        """
+        Transform Soil2D data using existing fitted scalers (no fitting).
+        
+        Args:
+            data: Input data of shape (samples, variables, columns, layers)
+            variable_names: List of variable names
+            num_layers: Number of soil layers
+            
+        Returns:
+            Normalized data of same shape as input
+        """
+        if data.shape[1] != len(variable_names):
+            raise ValueError(f"Data has {data.shape[1]} variables but {len(variable_names)} variable names provided")
+        
+        if data.shape[3] != num_layers:
+            raise ValueError(f"Data has {data.shape[3]} layers but {num_layers} layers expected")
+        
+        normalized_data = np.zeros_like(data)
+        
+        for var_idx, var_name in enumerate(variable_names):
+            for layer_idx in range(num_layers):
+                scaler_key = f'soil2d_{var_name}_layer{layer_idx}'
+                
+                if scaler_key not in self.scalers:
+                    raise KeyError(f"Scaler not found for Soil2D: {var_name}_layer{layer_idx}. Available keys: {list(self.scalers.keys())}")
+                
+                scaler = self.scalers[scaler_key]
+                
+                # Extract data for this variable-layer combination
+                layer_data = data[:, var_idx, :, layer_idx:layer_idx+1]  # Shape: (samples, columns, 1)
+                original_shape = layer_data.shape
+                layer_data_flat = layer_data.reshape(-1, 1)  # Flatten for scaler
+                
+                # Transform using existing scaler
+                normalized_flat = scaler.transform(layer_data_flat)
+                normalized_data[:, var_idx, :, layer_idx:layer_idx+1] = normalized_flat.reshape(original_shape)
         
         return normalized_data
     

@@ -222,11 +222,12 @@ def run_inference_all(
     config.data_config.data_paths = [data_paths]
     config.data_config.file_pattern = file_pattern
     
-    # Set train_split to 0.0 for inference (all data goes to test)
-    config.data_config.train_split = 0.0
-    
-    # CRITICAL FIX: Disable shuffling for inference to maintain data order
-    config.data_config.shuffle_data = False
+    # CRITICAL FIX: Use the EXACT same data processing as training
+    # During training: data was shuffled with random_state=42, then split 80/20
+    # For inference: we want to process the entire dataset but in the SAME order
+    # This ensures the test portion (20%) produces identical predictions
+    config.data_config.train_split = 0.0  # All data goes to test for inference
+    config.data_config.random_state = 42  # Same shuffle as training
     
     # Decide normalization pipeline by inspecting training run scalers next to model_path
     model_dir = Path(model_path).parent
@@ -812,13 +813,33 @@ def run_inference_all(
         use_refit = getattr(config, 'refit_normalization', False)
     except Exception:
         use_refit = False
-    if not use_refit:
-        normalized_data = _normalize_with_training_scalers()
+    # CRITICAL FIX: The fallback method is COMPLETELY BROKEN - it feeds RAW data to the model!
+    # Revert to transform-only mode and fix the bugs there
+    if uses_individual and hasattr(_loader, 'individual_scalers'):
+        logging.info("Replacing loader scalers with loaded training scalers")
+        
+        # DEBUG: Check if scaler replacement works
+        old_scaler_keys = list(_loader.individual_scalers.keys()) if hasattr(_loader.individual_scalers, 'keys') else []
+        logging.info(f"DEBUG: Old loader scalers: {old_scaler_keys}")
+        
+        _loader.individual_scalers = scalers
+        
+        new_scaler_keys = list(_loader.individual_scalers.keys()) if hasattr(_loader.individual_scalers, 'keys') else []
+        logging.info(f"DEBUG: New loader scalers: {new_scaler_keys}")
+        
+        # Check if the PFT1 scaler has the right parameters
+        if 'pft_1d' in _loader.individual_scalers:
+            pft_scaler = _loader.individual_scalers['pft_1d']
+            if hasattr(pft_scaler, 'scalers') and 'pft1d_PFT1_tlai' in pft_scaler.scalers:
+                test_scaler = pft_scaler.scalers['pft1d_PFT1_tlai']
+                logging.info(f"DEBUG: PFT1 tlai scaler - min: {getattr(test_scaler, 'data_min_', 'N/A')}, max: {getattr(test_scaler, 'data_max_', 'N/A')}")
+        
+        # Use transform-only mode (no fitting, just transform with existing scalers)
+        logging.info("Using exact training normalization method with transform-only mode")
+        normalized_data = _loader.normalize_data_individual(transform_only=True)
     else:
-        if uses_individual and hasattr(_loader, 'normalize_data_individual'):
-            normalized_data = _loader.normalize_data_individual()
-        else:
-            normalized_data = _loader.normalize_data()
+        logging.info("ERROR: Cannot use transform-only mode - falling back to broken method")
+        normalized_data = _normalize_with_training_scalers()
     
     # Now use the EXACT same split_data method as training (but with train_split=0.0)
     logging.info("Splitting data using training-compatible method (all data goes to test)...")
@@ -842,10 +863,118 @@ def run_inference_all(
         'variables_2d_soil': 'variables_2d_soil'
     }
     
+    # DEBUG: Check the normalized inputs for our target sample (index 9 = 110.0,12.722513)
+    target_sample_idx = 9
+    if 'variables_1d_pft' in test_data:
+        pft_tensor = test_data['variables_1d_pft']
+        target_pft = pft_tensor[target_sample_idx]  # Shape: (variables, pfts)
+        logging.info(f"DEBUG: Target sample {target_sample_idx} (110.0,12.722513)")
+        logging.info(f"DEBUG: PFT tensor shape: {target_pft.shape}")
+        logging.info(f"DEBUG: PFT tlai (var 0) all values: {target_pft[0, :]}")
+        
+        # Compare with expected values based on training scaler
+        # Raw PFT1 (index 0): 0.0 -> normalized: 0.0
+        # Raw PFT4 (index 3): 4.871814 -> normalized: 1.551439
+        expected_values = [0.0, 0.0, 0.0, 1.551439, 0.0]  # First 5 PFTs
+        actual_values = target_pft[0, :5].tolist()
+        
+        logging.info(f"DEBUG: Expected PFT tlai (first 5): {expected_values}")
+        logging.info(f"DEBUG: Actual PFT tlai (first 5): {actual_values}")
+        
+        # Check if values match (within small tolerance)
+        matches = [abs(exp - act) < 0.001 for exp, act in zip(expected_values, actual_values)]
+        logging.info(f"DEBUG: Value matches: {matches}")
+        
+        if not all(matches):
+            logging.info(f"DEBUG: NORMALIZATION MISMATCH DETECTED!")
+            for i, (exp, act, match) in enumerate(zip(expected_values, actual_values, matches)):
+                if not match:
+                    logging.info(f"DEBUG: PFT{i+1}: expected={exp:.6f}, actual={act:.6f}, diff={abs(exp-act):.6f}")
+        else:
+            logging.info(f"DEBUG: All normalization values match - issue must be elsewhere")
+    
     for test_key, model_key in key_mapping.items():
         if test_key in test_data:
             model_inputs[model_key] = test_data[test_key]
             logging.info(f"Model input {model_key}: {model_inputs[model_key].shape}")
+    
+    # CRITICAL DEBUG: Detailed tensor comparison for specific location
+    if debug_vars:
+        logging.info("=== DEEP DEBUGGING NORMALIZED TENSORS FOR 110.0,12.722513 ===")
+        
+        # First, find the location in raw data and track its processing
+        target_location_found = False
+        target_row_idx = None
+        
+        if hasattr(_loader, 'df') and isinstance(_loader.df, pd.DataFrame):
+            for idx, row in _loader.df.iterrows():
+                if abs(row['Longitude'] - 110.0) < 0.001 and abs(row['Latitude'] - 12.722513) < 0.001:
+                    target_location_found = True
+                    target_row_idx = idx
+                    logging.info(f"=== FOUND TARGET LOCATION AT RAW DATA INDEX {idx} ===")
+                    logging.info(f"Coordinates: Lon={row['Longitude']}, Lat={row['Latitude']}")
+                    
+                    # Log the raw input features for this exact row
+                    for col in ['tlai', 'deadcrootc', 'deadstemc']:
+                        if col in row:
+                            raw_data = np.array(row[col]) if hasattr(row[col], '__len__') else [row[col]]
+                            logging.info(f"Raw {col}: {raw_data}")
+                    
+                    # Now find this same location in the model inputs
+                    # We need to map from raw DataFrame index to model input index
+                    # This is tricky because of shuffling, but let's try to find it
+                    
+                    # Check all model input samples to find matching coordinates
+                    for tensor_idx in range(model_inputs['static'].shape[0]):
+                        # Get the denormalized static data for comparison
+                        static_norm = model_inputs['static'][tensor_idx].cpu().numpy()
+                        
+                        # Try to denormalize the static data to find coordinates
+                        # We'll need to use the static scaler for this
+                        if 'static' in scalers and hasattr(scalers['static'], 'inverse_transform'):
+                            try:
+                                static_denorm = scalers['static'].inverse_transform(static_norm.reshape(1, -1))[0]
+                                # Debug: show first few coordinates for all samples
+                                if tensor_idx < 3:  # Only show first 3 to avoid spam
+                                    logging.info(f"Sample {tensor_idx} denormalized coords: [{static_denorm[0]:.3f}, {static_denorm[1]:.3f}]")
+                                # Check if this matches our target coordinates
+                                # Try both Lon,Lat and Lat,Lon orders
+                                if len(static_denorm) >= 2:
+                                    coord_match = False
+                                    if abs(static_denorm[0] - 110.0) < 0.001 and abs(static_denorm[1] - 12.722513) < 0.001:
+                                        coord_match = True
+                                        coord_order = "Lon,Lat"
+                                    elif abs(static_denorm[1] - 110.0) < 0.001 and abs(static_denorm[0] - 12.722513) < 0.001:
+                                        coord_match = True  
+                                        coord_order = "Lat,Lon"
+                                    
+                                    if coord_match:
+                                        logging.info(f"=== FOUND TARGET IN MODEL INPUTS AT INDEX {tensor_idx} ===")
+                                        logging.info(f"Denormalized coordinates: Lon={static_denorm[0]}, Lat={static_denorm[1]}")
+                                        
+                                        # Log ALL normalized input tensors for this location
+                                        logging.info("NORMALIZED MODEL INPUTS:")
+                                        if 'variables_1d_pft' in model_inputs:
+                                            pft_tensor = model_inputs['variables_1d_pft'][tensor_idx].cpu().numpy()
+                                            logging.info(f"variables_1d_pft shape: {pft_tensor.shape}")
+                                            for var_idx, var_name in enumerate(['tlai', 'deadcrootc', 'deadstemc']):
+                                                logging.info(f"  {var_name}: {pft_tensor[var_idx]}")
+                                        
+                                        if 'scalar' in model_inputs:
+                                            scalar_tensor = model_inputs['scalar'][tensor_idx].cpu().numpy()
+                                            logging.info(f"scalar: {scalar_tensor}")
+                                        
+                                        if 'static' in model_inputs:
+                                            logging.info(f"static (normalized): {static_norm[:10]} (first 10)")
+                                            logging.info(f"static (denormalized): {static_denorm[:10]} (first 10)")
+                                        
+                                        break
+                            except Exception as e:
+                                logging.warning(f"Failed to denormalize static data: {e}")
+                    break
+        
+        if not target_location_found:
+            logging.warning("Target location 110.0,12.722513 not found in raw data!")
     
     # Additional debug summaries before inference
     if debug_vars:
@@ -893,26 +1022,52 @@ def run_inference_all(
             model_inputs[k] = model_inputs[k].to(device)
     
     with torch.no_grad():
-        # Support optional water if present
-        if 'water' in model_inputs:
-            predictions = model(
-                model_inputs.get('time_series'),
-                model_inputs.get('static'),
-                model_inputs.get('pft_param'),
-                model_inputs.get('scalar'),
-                model_inputs.get('variables_1d_pft'),
-                model_inputs.get('variables_2d_soil'),
-                model_inputs.get('water')
-            )
+        # CRITICAL FIX: Use AMP if CUDA is available to match training evaluation
+        use_amp = torch.cuda.is_available()
+        
+        if use_amp:
+            with torch.amp.autocast('cuda'):
+                # Support optional water if present
+                if 'water' in model_inputs:
+                    predictions = model(
+                        model_inputs.get('time_series'),
+                        model_inputs.get('static'),
+                        model_inputs.get('pft_param'),
+                        model_inputs.get('scalar'),
+                        model_inputs.get('variables_1d_pft'),
+                        model_inputs.get('variables_2d_soil'),
+                        model_inputs.get('water')
+                    )
+                else:
+                    predictions = model(
+                        model_inputs.get('time_series'),
+                        model_inputs.get('static'),
+                        model_inputs.get('pft_param'),
+                        model_inputs.get('scalar'),
+                        model_inputs.get('variables_1d_pft'),
+                        model_inputs.get('variables_2d_soil')
+                    )
         else:
-            predictions = model(
-                model_inputs.get('time_series'),
-                model_inputs.get('static'),
-                model_inputs.get('pft_param'),
-                model_inputs.get('scalar'),
-                model_inputs.get('variables_1d_pft'),
-                model_inputs.get('variables_2d_soil')
-            )
+            # Support optional water if present
+            if 'water' in model_inputs:
+                predictions = model(
+                    model_inputs.get('time_series'),
+                    model_inputs.get('static'),
+                    model_inputs.get('pft_param'),
+                    model_inputs.get('scalar'),
+                    model_inputs.get('variables_1d_pft'),
+                    model_inputs.get('variables_2d_soil'),
+                    model_inputs.get('water')
+                )
+            else:
+                predictions = model(
+                    model_inputs.get('time_series'),
+                    model_inputs.get('static'),
+                    model_inputs.get('pft_param'),
+                    model_inputs.get('scalar'),
+                    model_inputs.get('variables_1d_pft'),
+                    model_inputs.get('variables_2d_soil')
+                )
     
     logging.info("Inference completed successfully")
     

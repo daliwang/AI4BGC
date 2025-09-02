@@ -90,18 +90,28 @@ class PandasDataLoader(DataLoaderIndividual):
             print("[DEBUG] Error printing Y columns with inspector:", e)
         return df
 
-    def _normalize_scalar_individual(self) -> Tuple[torch.Tensor, Any]:
+    def _normalize_scalar_individual(self, transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         scalar_columns = self.data_config.x_list_scalar_columns
         logger.info(f"Normalizing scalar data with columns: {scalar_columns}")
         data = np.array([[self.df[col].iloc[i] for col in scalar_columns] for i in range(len(self.df))])
-        normalized_data = self.individual_scalers['scalar'].fit_transform_scalar(data, scalar_columns)
+        
+        if transform_only:
+            normalized_data = self.individual_scalers['scalar'].transform_scalar(data, scalar_columns)
+        else:
+            normalized_data = self.individual_scalers['scalar'].fit_transform_scalar(data, scalar_columns)
+            
         return torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type), self.individual_scalers['scalar']
 
-    def _normalize_y_scalar_individual(self) -> Tuple[torch.Tensor, Any]:
+    def _normalize_y_scalar_individual(self, transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         y_scalar_columns = self.data_config.y_list_scalar_columns
         logger.info(f"Normalizing y_scalar data with columns: {y_scalar_columns}")
         data = np.array([[self.df[col].iloc[i] for col in y_scalar_columns] for i in range(len(self.df))])
-        normalized_data = self.individual_scalers['y_scalar'].fit_transform_scalar(data, y_scalar_columns)
+        
+        if transform_only:
+            normalized_data = self.individual_scalers['y_scalar'].transform_scalar(data, y_scalar_columns)
+        else:
+            normalized_data = self.individual_scalers['y_scalar'].fit_transform_scalar(data, y_scalar_columns)
+            
         tensor = torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type)
         print("y_scalar_data stats:", tensor.min().item(), tensor.max().item(), tensor.mean().item())
         return tensor, self.individual_scalers['y_scalar']
@@ -154,7 +164,7 @@ class PandasDataLoader(DataLoaderIndividual):
         pft_param_data = torch.tensor(param_matrix_norm, dtype=self.preprocessing_config.data_type)
         return pft_param_data, scaler
 
-    def _normalize_list_1d_individual(self, columns: List[str]) -> Tuple[torch.Tensor, Any]:
+    def _normalize_list_1d_individual(self, columns: List[str], transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         logger.info(f"Normalizing 1D list data with columns: {columns}")
         col_data = []
         max_length_1d = 17
@@ -177,22 +187,30 @@ class PandasDataLoader(DataLoaderIndividual):
         logger.info(f"After transpose: {data.shape}")
         # Normalization
         if columns == self.data_config.x_list_columns_1d:
-            normalized_data = self.individual_scalers['pft_1d'].fit_transform_pft_1d(
-                data, [f'PFT{i}' for i in range(1, 17)], columns)
+            if transform_only:
+                normalized_data = self.individual_scalers['pft_1d'].transform_pft_1d(
+                    data, [f'PFT{i}' for i in range(1, 17)], columns)
+            else:
+                normalized_data = self.individual_scalers['pft_1d'].fit_transform_pft_1d(
+                    data, [f'PFT{i}' for i in range(1, 17)], columns)
             # Transpose back to (samples, variables, 16)
             normalized_data = np.transpose(normalized_data, (0, 2, 1))
             tensor = torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type)
             return tensor, self.individual_scalers['pft_1d']
         else:
-            normalized_data = self.individual_scalers['y_pft_1d'].fit_transform_pft_1d(
-                data, [f'PFT{i}' for i in range(1, 17)], columns)
+            if transform_only:
+                normalized_data = self.individual_scalers['y_pft_1d'].transform_pft_1d(
+                    data, [f'PFT{i}' for i in range(1, 17)], columns)
+            else:
+                normalized_data = self.individual_scalers['y_pft_1d'].fit_transform_pft_1d(
+                    data, [f'PFT{i}' for i in range(1, 17)], columns)
             # Transpose back to (samples, variables, 16)
             normalized_data = np.transpose(normalized_data, (0, 2, 1))
             tensor = torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type)
             print("y_pft_1d_data stats:", tensor.min().item(), tensor.max().item(), tensor.mean().item())
             return tensor, self.individual_scalers['y_pft_1d']
 
-    def _normalize_list_2d_individual(self, columns: List[str]) -> Tuple[torch.Tensor, Any]:
+    def _normalize_list_2d_individual(self, columns: List[str], transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         logger.info(f"Normalizing 2D list data with columns: {columns}")
         col_data = []
         fallback_counts = [0] * len(columns)
@@ -235,13 +253,21 @@ class PandasDataLoader(DataLoaderIndividual):
         logger.info(f"Standardized Soil2D data shape: {data.shape}")
         data = data[:, :, None, :]
         if columns == self.data_config.x_list_columns_2d:
-            normalized_data = self.individual_scalers['soil_2d'].fit_transform_soil_2d(
-                data, columns, data.shape[3])
+            if transform_only:
+                normalized_data = self.individual_scalers['soil_2d'].transform_soil_2d(
+                    data, columns, data.shape[3])
+            else:
+                normalized_data = self.individual_scalers['soil_2d'].fit_transform_soil_2d(
+                    data, columns, data.shape[3])
             tensor = torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type)
             return tensor, self.individual_scalers['soil_2d']
         else:
-            normalized_data = self.individual_scalers['y_soil_2d'].fit_transform_soil_2d(
-                data, columns, data.shape[3])
+            if transform_only:
+                normalized_data = self.individual_scalers['y_soil_2d'].transform_soil_2d(
+                    data, columns, data.shape[3])
+            else:
+                normalized_data = self.individual_scalers['y_soil_2d'].fit_transform_soil_2d(
+                    data, columns, data.shape[3])
             tensor = torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type)
             print("y_soil_2d stats:", tensor.min().item(), tensor.max().item(), tensor.mean().item())
             return tensor, self.individual_scalers['y_soil_2d']

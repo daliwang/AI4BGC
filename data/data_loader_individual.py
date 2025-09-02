@@ -261,10 +261,19 @@ class DataLoaderIndividual:
         """Pad 1D array to target length."""
         if isinstance(x, (list, np.ndarray)):
             x_array = np.array(x)
+            
+            # CRITICAL FIX: For PFT data, drop PFT0 first, then truncate/pad
+            # The raw data has PFT0-PFTn, but the model expects PFT1-PFT16
+            if target_length == 16 and len(x_array) >= 17:
+                # This is likely PFT data - drop PFT0 (index 0) first
+                x_array = x_array[1:]  # Drop PFT0, keep PFT1-PFTn
+            
             if len(x_array) < target_length:
-                return np.pad(x_array, (0, target_length - len(x_array)), mode='constant')
+                result = np.pad(x_array, (0, target_length - len(x_array)), mode='constant')
             else:
-                return x_array[:target_length]
+                result = x_array[:target_length]
+                    
+            return result
         else:
             return np.zeros(target_length, dtype=np.float32)
     
@@ -398,14 +407,22 @@ class DataLoaderIndividual:
                 logger.warning(f"Group-norm dump failed: {_e}")
         return ret
 
-    def normalize_data_individual(self) -> Dict[str, Any]:
+    def normalize_data_individual(self, transform_only: bool = False) -> Dict[str, Any]:
         """
         Normalize all data types using individual variable normalization.
         This method provides optimal normalization for each variable but uses more memory.
+        
+        Args:
+            transform_only: If True, use existing scalers without fitting (for inference).
+                           If False, fit new scalers (for training).
+        
         Returns:
             Dictionary containing normalized data and individual scalers
         """
-        logger.info("Normalizing data using individual variable normalization...")
+        if transform_only:
+            logger.info("Normalizing data using existing individual scalers (transform-only mode)...")
+        else:
+            logger.info("Normalizing data using individual variable normalization (fit+transform mode)...")
 
         # Time series (keep group normalization for now)
         time_series_data, time_series_scaler = self._normalize_time_series()
@@ -414,16 +431,16 @@ class DataLoaderIndividual:
         static_data, static_scaler = self._normalize_static(self.data_config.static_columns)
 
         # Scalar - Use individual normalization
-        scalar_data, scalar_scaler = self._normalize_scalar_individual()
-        y_scalar_data, y_scalar_scaler = self._normalize_y_scalar_individual()
+        scalar_data, scalar_scaler = self._normalize_scalar_individual(transform_only)
+        y_scalar_data, y_scalar_scaler = self._normalize_y_scalar_individual(transform_only)
 
         # 1D PFT - Use individual normalization
-        pft_1d_data, pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.x_list_columns_1d)
-        y_pft_1d_data, y_pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.y_list_columns_1d)
+        pft_1d_data, pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.x_list_columns_1d, transform_only)
+        y_pft_1d_data, y_pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.y_list_columns_1d, transform_only)
 
         # 2D Soil - Use individual normalization
-        variables_2d_soil, variables_2d_soil_scaler = self._normalize_list_2d_individual(self.data_config.x_list_columns_2d)
-        y_soil_2d, y_soil_2d_scaler = self._normalize_list_2d_individual(self.data_config.y_list_columns_2d)
+        variables_2d_soil, variables_2d_soil_scaler = self._normalize_list_2d_individual(self.data_config.x_list_columns_2d, transform_only)
+        y_soil_2d, y_soil_2d_scaler = self._normalize_list_2d_individual(self.data_config.y_list_columns_2d, transform_only)
 
         # PFT param (keep group normalization for now)
         pft_param_data, pft_param_scaler = self._normalize_pft_param()
@@ -573,37 +590,37 @@ class DataLoaderIndividual:
 
         # Scalar - Choose normalization method
         if 'scalar' in use_individual_for:
-            scalar_data, scalar_scaler = self._normalize_scalar_individual()
+            scalar_data, scalar_scaler = self._normalize_scalar_individual(transform_only=False)
         else:
             scalar_data, scalar_scaler = self._normalize_scalar()
 
         # Y scalar - Choose normalization method
         if 'y_scalar' in use_individual_for:
-            y_scalar_data, y_scalar_scaler = self._normalize_y_scalar_individual()
+            y_scalar_data, y_scalar_scaler = self._normalize_y_scalar_individual(transform_only=False)
         else:
             y_scalar_data, y_scalar_scaler = self._normalize_y_scalar()
 
         # 1D PFT - Choose normalization method
         if 'pft_1d' in use_individual_for:
-            pft_1d_data, pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.x_list_columns_1d)
+            pft_1d_data, pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.x_list_columns_1d, transform_only=False)
         else:
             pft_1d_data, pft_1d_scaler = self._normalize_list_1d(self.data_config.x_list_columns_1d)
 
         # Y PFT1D - Choose normalization method
         if 'y_pft_1d' in use_individual_for:
-            y_pft_1d_data, y_pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.y_list_columns_1d)
+            y_pft_1d_data, y_pft_1d_scaler = self._normalize_list_1d_individual(self.data_config.y_list_columns_1d, transform_only=False)
         else:
             y_pft_1d_data, y_pft_1d_scaler = self._normalize_list_1d(self.data_config.y_list_columns_1d)
 
         # 2D Soil - Choose normalization method
         if 'soil_2d' in use_individual_for:
-            variables_2d_soil, variables_2d_soil_scaler = self._normalize_list_2d_individual(self.data_config.x_list_columns_2d)
+            variables_2d_soil, variables_2d_soil_scaler = self._normalize_list_2d_individual(self.data_config.x_list_columns_2d, transform_only=False)
         else:
             variables_2d_soil, variables_2d_soil_scaler = self._normalize_list_2d(self.data_config.x_list_columns_2d)
 
         # Y Soil2D - Choose normalization method
         if 'y_soil_2d' in use_individual_for:
-            y_soil_2d, y_soil_2d_scaler = self._normalize_list_2d_individual(self.data_config.y_list_columns_2d)
+            y_soil_2d, y_soil_2d_scaler = self._normalize_list_2d_individual(self.data_config.y_list_columns_2d, transform_only=False)
         else:
             y_soil_2d, y_soil_2d_scaler = self._normalize_list_2d(self.data_config.y_list_columns_2d)
 
@@ -817,7 +834,7 @@ class DataLoaderIndividual:
         
         return torch.tensor(y_scalar_normalized, dtype=self.preprocessing_config.data_type), scaler
 
-    def _normalize_scalar_individual(self) -> Tuple[torch.Tensor, Any]:
+    def _normalize_scalar_individual(self, transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         """Normalize scalar variables individually using IndividualScalerManager."""
         scalar_columns = self.data_config.x_list_scalar_columns
         logger.info(f"Normalizing scalar data with columns: {scalar_columns}")
@@ -827,12 +844,15 @@ class DataLoaderIndividual:
         
         scalar_data = self.df[scalar_columns].values
         
-        # Use individual normalization
-        normalized_data = self.individual_scalers['scalar'].fit_transform_scalar(scalar_data, scalar_columns)
+        # Use individual normalization (fit+transform or transform-only)
+        if transform_only:
+            normalized_data = self.individual_scalers['scalar'].transform_scalar(scalar_data, scalar_columns)
+        else:
+            normalized_data = self.individual_scalers['scalar'].fit_transform_scalar(scalar_data, scalar_columns)
         
         return torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type), self.individual_scalers['scalar']
 
-    def _normalize_y_scalar_individual(self) -> Tuple[torch.Tensor, Any]:
+    def _normalize_y_scalar_individual(self, transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         """Normalize y_scalar variables individually using IndividualScalerManager."""
         y_scalar_columns = self.data_config.y_list_scalar_columns
         logger.info(f"Normalizing y_scalar data with columns: {y_scalar_columns}")
@@ -842,12 +862,15 @@ class DataLoaderIndividual:
         
         y_scalar_data = self.df[y_scalar_columns].values
         
-        # Use individual normalization
-        normalized_data = self.individual_scalers['y_scalar'].fit_transform_scalar(y_scalar_data, y_scalar_columns)
+        # Use individual normalization (fit+transform or transform-only)
+        if transform_only:
+            normalized_data = self.individual_scalers['y_scalar'].transform_scalar(y_scalar_data, y_scalar_columns)
+        else:
+            normalized_data = self.individual_scalers['y_scalar'].fit_transform_scalar(y_scalar_data, y_scalar_columns)
         
         return torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type), self.individual_scalers['y_scalar']
 
-    def _normalize_list_1d_individual(self, columns: List[str]) -> Tuple[torch.Tensor, Any]:
+    def _normalize_list_1d_individual(self, columns: List[str], transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         """Normalize 1D list data individually using IndividualScalerManager."""
         logger.info(f"Normalizing 1D list data with columns: {columns}")
         
@@ -857,29 +880,34 @@ class DataLoaderIndividual:
         col_data = [np.vstack(self.df[col].values) for col in columns]
         data = np.stack(col_data, axis=1)  # shape: (samples, features, length)
         
+        # For PFT1D, we need to drop PFT0 if data has 17 PFTs
+        if data.shape[2] == 17:  # 17 PFTs (including PFT0)
+            data = data[:, :, 1:]  # Drop PFT0, keep PFT1-PFT16
+        elif data.shape[2] != 16:  # Unexpected PFT count
+            logger.warning(f"Unexpected PFT count: {data.shape[2]}, expected 16 or 17")
+        
         # For PFT1D, the data shape is (samples, features, pfts)
         # We need to transpose to (samples, pfts, features) for the scaler
         if data.shape[2] == 16:  # 16 PFTs
             data = np.transpose(data, (0, 2, 1))  # (samples, pfts, features)
-            pft_names = [f'PFT{i}' for i in range(16)]
+            # Use PFT1-PFT16 naming to match training scaler keys (not PFT0-PFT15)
+            pft_names = [f'PFT{i}' for i in range(1, 17)]
             
             if columns == self.data_config.x_list_columns_1d:
-                # Input PFT1D data
-                normalized_data = self.individual_scalers['pft_1d'].fit_transform_pft_1d(
-                    data, 
-                    pft_names, 
-                    columns
-                )
+                # Input PFT1D data - use fit+transform or transform-only
+                if transform_only:
+                    normalized_data = self.individual_scalers['pft_1d'].transform_pft_1d(data, pft_names, columns)
+                else:
+                    normalized_data = self.individual_scalers['pft_1d'].fit_transform_pft_1d(data, pft_names, columns)
                 # Transpose back to original shape
                 normalized_data = np.transpose(normalized_data, (0, 2, 1))
                 return torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type), self.individual_scalers['pft_1d']
             else:
-                # Output PFT1D data
-                normalized_data = self.individual_scalers['y_pft_1d'].fit_transform_pft_1d(
-                    data, 
-                    pft_names, 
-                    columns
-                )
+                # Output PFT1D data - use fit+transform or transform-only
+                if transform_only:
+                    normalized_data = self.individual_scalers['y_pft_1d'].transform_pft_1d(data, pft_names, columns)
+                else:
+                    normalized_data = self.individual_scalers['y_pft_1d'].fit_transform_pft_1d(data, pft_names, columns)
                 # Transpose back to original shape
                 normalized_data = np.transpose(normalized_data, (0, 2, 1))
                 return torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type), self.individual_scalers['y_pft_1d']
@@ -892,7 +920,7 @@ class DataLoaderIndividual:
             data_normalized = data_normalized.reshape(n_samples, n_features, n_length)
             return torch.tensor(data_normalized, dtype=self.preprocessing_config.data_type), scaler
 
-    def _normalize_list_2d_individual(self, columns: List[str]) -> Tuple[torch.Tensor, Any]:
+    def _normalize_list_2d_individual(self, columns: List[str], transform_only: bool = False) -> Tuple[torch.Tensor, Any]:
         """Normalize 2D list data individually using IndividualScalerManager."""
         logger.info(f"Normalizing 2D list data with columns: {columns}")
         
@@ -935,12 +963,11 @@ class DataLoaderIndividual:
         
         # For Soil2D, we need to handle the layer dimension
         if columns == self.data_config.x_list_columns_2d:
-            # Input Soil2D data
-            normalized_data = self.individual_scalers['soil_2d'].fit_transform_soil_2d(
-                data, 
-                columns, 
-                data.shape[3]  # number of layers
-            )
+            # Input Soil2D data - use fit+transform or transform-only
+            if transform_only:
+                normalized_data = self.individual_scalers['soil_2d'].transform_soil_2d(data, columns, data.shape[3])
+            else:
+                normalized_data = self.individual_scalers['soil_2d'].fit_transform_soil_2d(data, columns, data.shape[3])
             # Log after normalization for input soil2D
             non_zero_count_after = np.count_nonzero(normalized_data)
             logger.info(f"After normalization - Input Soil2D non-zero count: {non_zero_count_after}")
@@ -948,12 +975,11 @@ class DataLoaderIndividual:
                 logger.info(f"After normalization - Input Soil2D sample (first few elements): {normalized_data[0, :2, :2, :2]}")
             return torch.tensor(normalized_data, dtype=self.preprocessing_config.data_type), self.individual_scalers['soil_2d']
         else:
-            # Output Soil2D data
-            normalized_data = self.individual_scalers['y_soil_2d'].fit_transform_soil_2d(
-                data, 
-                columns, 
-                data.shape[3]  # number of layers
-            )
+            # Output Soil2D data - use fit+transform or transform-only
+            if transform_only:
+                normalized_data = self.individual_scalers['y_soil_2d'].transform_soil_2d(data, columns, data.shape[3])
+            else:
+                normalized_data = self.individual_scalers['y_soil_2d'].fit_transform_soil_2d(data, columns, data.shape[3])
             # Log after normalization for output soil2D
             non_zero_count_after = np.count_nonzero(normalized_data)
             logger.info(f"After normalization - Output Soil2D non-zero count: {non_zero_count_after}")

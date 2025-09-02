@@ -36,7 +36,7 @@ import pandas as pd
 sys.path.append(str(Path(__file__).parent))
 
 from config.training_config import get_cnp_model_config
-from data.data_loader_pandas import PandasDataLoader
+from data.data_loader_individual import DataLoaderIndividual
 from models.cnp_combined_model import CNPCombinedModel
 from training.trainer import ModelTrainer
 
@@ -282,9 +282,10 @@ def main():
         assert config.data_config.y_list_columns_2d == ['Y_' + v for v in config.data_config.x_list_columns_2d], \
             f"2D columns not aligned!\nX: {config.data_config.x_list_columns_2d}\nY: {config.data_config.y_list_columns_2d}"
 
-        # Initialize data loader
+        # Initialize data loader (using fixed DataLoaderIndividual)
         logger.info("Loading data...")
-        data_loader = PandasDataLoader(
+        logger.info("Using DataLoaderIndividual with PFT0 indexing fix")
+        data_loader = DataLoaderIndividual(
             config.data_config,
             config.preprocessing_config
         )
