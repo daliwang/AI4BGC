@@ -132,7 +132,10 @@ def auto_detect_variable_list(ai_predictions_path: Path) -> list:
                     config = json.load(f)
                 data_info = config.get('data_info', {})
                 vars_1d = data_info.get('variables_1d_pft', [])
+                # Patch: check both possible keys for soil2D variables
                 vars_2d = data_info.get('variables_2d_soil', [])
+                if not vars_2d:
+                    vars_2d = data_info.get('x_list_columns_2d', [])
                 print(f"Auto-detected variables from {config_path}")
                 print(f"  1D PFT variables: {vars_1d}")
                 print(f"  2D soil variables: {vars_2d}")
@@ -364,8 +367,11 @@ Examples:
                 parsed_vars = parse_cnp_io_list(var_list_path)
                 if 'pft_1d_variables' in parsed_vars:
                     cnp_io_variables.extend(parsed_vars['pft_1d_variables'])
+                # Fix: include both possible keys for soil2D variables
                 if 'variables_2d_soil' in parsed_vars:
                     cnp_io_variables.extend(parsed_vars['variables_2d_soil'])
+                elif 'x_list_columns_2d' in parsed_vars:
+                    cnp_io_variables.extend(parsed_vars['x_list_columns_2d'])
                 print(f"  Variables to update: {cnp_io_variables}")
             except Exception as e:
                 print(f"  Warning: Could not parse variable list: {e}")
