@@ -262,11 +262,10 @@ class DataLoaderIndividual:
         if isinstance(x, (list, np.ndarray)):
             x_array = np.array(x)
             
-            # CRITICAL FIX: For PFT data, drop PFT0 first, then truncate/pad
-            # The raw data has PFT0-PFTn, but the model expects PFT1-PFT16
+            # For PFT data (target_length=16), drop PFT0 before truncation/padding
+            # Raw data contains PFT0-PFT16, but model expects PFT1-PFT16
             if target_length == 16 and len(x_array) >= 17:
-                # This is likely PFT data - drop PFT0 (index 0) first
-                x_array = x_array[1:]  # Drop PFT0, keep PFT1-PFTn
+                x_array = x_array[1:]  # Drop PFT0, keep PFT1-PFT16
             
             if len(x_array) < target_length:
                 result = np.pad(x_array, (0, target_length - len(x_array)), mode='constant')
@@ -880,10 +879,10 @@ class DataLoaderIndividual:
         col_data = [np.vstack(self.df[col].values) for col in columns]
         data = np.stack(col_data, axis=1)  # shape: (samples, features, length)
         
-        # For PFT1D, we need to drop PFT0 if data has 17 PFTs
+        # Handle PFT0 dropping for compatibility with model expectations
         if data.shape[2] == 17:  # 17 PFTs (including PFT0)
             data = data[:, :, 1:]  # Drop PFT0, keep PFT1-PFT16
-        elif data.shape[2] != 16:  # Unexpected PFT count
+        elif data.shape[2] != 16:
             logger.warning(f"Unexpected PFT count: {data.shape[2]}, expected 16 or 17")
         
         # For PFT1D, the data shape is (samples, features, pfts)

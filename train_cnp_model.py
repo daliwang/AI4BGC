@@ -282,9 +282,9 @@ def main():
         assert config.data_config.y_list_columns_2d == ['Y_' + v for v in config.data_config.x_list_columns_2d], \
             f"2D columns not aligned!\nX: {config.data_config.x_list_columns_2d}\nY: {config.data_config.y_list_columns_2d}"
 
-        # Initialize data loader (using fixed DataLoaderIndividual)
+        # Initialize data loader
         logger.info("Loading data...")
-        logger.info("Using DataLoaderIndividual with PFT0 indexing fix")
+        logger.info("Using DataLoaderIndividual for consistent PFT indexing")
         data_loader = DataLoaderIndividual(
             config.data_config,
             config.preprocessing_config
