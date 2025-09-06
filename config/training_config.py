@@ -164,6 +164,8 @@ class TrainingConfig:
     scalar_loss_weight: float = 1.0
     vector_loss_weight: float = 1.0
     matrix_loss_weight: float = 1.0
+    # Specific variable weights
+    xsmrpool_loss_weight: float = 10.0
     
     # Optimizer
     optimizer_type: str = 'adam'  # 'adam', 'sgd', 'adamw'
@@ -221,7 +223,7 @@ class TrainingConfig:
     use_learnable_loss_weights: bool = False
 
     # PFT sparsity regularization (encourage zero predictions where targets are zero)
-    pft_zero_sparsity_weight: float = 0.1  # set >0 to enable (e.g., 0.1)
+    pft_zero_sparsity_weight: float = 0.0  # default disabled; set >0 to enable
     pft_zero_threshold: float = 1e-8       # threshold in normalized target space for zero mask
 
     def get_device(self) -> torch.device:
@@ -268,6 +270,7 @@ class PreprocessingConfig:
     # Normalization methods
     time_series_normalization: str = 'minmax'  # 'minmax', 'standard', 'robust'
     static_normalization: str = 'minmax'
+    scalar_normalization: str = 'minmax'
     target_normalization: str = 'minmax'
     list_1d_normalization: str = 'minmax'
     list_2d_normalization: str = 'minmax'

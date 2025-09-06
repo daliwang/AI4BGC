@@ -177,6 +177,12 @@ def main():
         default='individual',
         help='Normalization method: group, individual (per-variable, default), or hybrid (selective)'
     )
+    parser.add_argument(
+        '--xsmrpool-loss-weight',
+        type=float,
+        default=None,
+        help='Extra loss weight applied to xsmrpool (non-positive pool)'
+    )
     
     args = parser.parse_args()
     
@@ -245,6 +251,13 @@ def main():
             predictions_dir=str(output_dir / "cnp_predictions"),
             use_early_stopping=False
         )
+        # apply xsmrpool loss weight from CLI if provided
+        if args.xsmrpool_loss_weight is not None:
+            try:
+                config.update_training_config(xsmrpool_loss_weight=float(args.xsmrpool_loss_weight))
+                logger.info(f"Using xsmrpool loss weight: {config.training_config.xsmrpool_loss_weight}")
+            except Exception as e:
+                logger.warning(f"Failed to set xsmrpool loss weight: {e}")
         logger.info(f"Effective learning rate for this run: {effective_lr}")
 
         # Optional strict determinism (opt-in via CLI)
@@ -356,10 +369,16 @@ def main():
                         logger.info(f"  After Individual Normalization {key}: type={type(value)}")
         else:  # hybrid
             normalized_data = data_loader.normalize_data_hybrid(
-                individual_data_types=['scalar', 'pft_1d'],
-                group_data_types=['soil_2d']
+                use_individual_for=['scalar', 'pft_1d', 'soil_2d', 'y_scalar', 'y_pft_1d', 'y_soil_2d'],
+                group_soil_vars=['sminn_vr', 'smin_no3_vr', 'smin_nh4_vr']
             )
-            logger.info("Applied hybrid normalization: individual for scalar and pft_1d, group for soil_2d")
+            logger.info("Applied hybrid normalization: individual for most variables, group for soil minerals variables")
+
+            # Add xsmrpool-specific loss weighting
+            if 'xsmrpool_loss_weight' not in config.__dict__:
+                config.xsmrpool_loss_weight = 2.0  # Increase weight for xsmrpool
+            if 'soil_mineral_loss_weight' not in config.__dict__:
+                config.soil_mineral_loss_weight = 1.5  # Increase weight for soil minerals
         logger.info("Data normalized successfully.")
         # Log details of normalized data for soil2D variables
         logger.info("Checking normalized data for soil2D variables...")

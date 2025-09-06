@@ -176,6 +176,10 @@ class ModelTrainer:
         
         # Setup loss function
         self.criterion = nn.MSELoss()
+        # Loss weights from config (defaults)
+        self.scalar_loss_weight = getattr(self.config, 'scalar_loss_weight', 1.0)
+        self.vector_loss_weight = getattr(self.config, 'vector_loss_weight', 1.0)
+        self.matrix_loss_weight = getattr(self.config, 'matrix_loss_weight', 1.0)
         
         # Training state
         self.train_losses = []
@@ -378,11 +382,64 @@ class ModelTrainer:
                     outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
 
             # Compute loss
-            loss = self._compute_loss(outputs['scalar'], y_scalar)
-            # Vector (PFT1D): base MSE
-            vector_pred = outputs['pft_1d']
-            vector_targ = y_pft_1d
-            loss += self._compute_loss(vector_pred.view(vector_pred.size(0), -1), vector_targ.view(vector_targ.size(0), -1))
+            loss = self.scalar_loss_weight * self._compute_loss(outputs['scalar'], y_scalar)
+
+            # Vector (PFT1D): Apply differential weighting specifically to xsmrpool
+            vector_pred = outputs['pft_1d']  # shape: [batch, n_vars*n_pfts] or [batch, n_vars, n_pfts]
+            vector_targ = y_pft_1d         # expected shape: [batch, n_vars, n_pfts]
+
+            xsmrpool_weight = getattr(self.config, 'xsmrpool_loss_weight', 1.0)
+
+            try:
+                # Determine variable list and reshape predictions if needed
+                varnames = None
+                if hasattr(self.model, 'data_info') and 'variables_1d_pft' in self.model.data_info:
+                    varnames = list(self.model.data_info['variables_1d_pft'])
+                n_vars = len(varnames) if varnames is not None else vector_targ.size(1)
+                n_pfts = vector_targ.size(2)
+
+                if vector_pred.dim() == 2:
+                    # reshape flat predictions to [batch, n_vars, n_pfts]
+                    vector_pred_reshaped = vector_pred.view(vector_pred.size(0), n_vars, n_pfts)
+                else:
+                    vector_pred_reshaped = vector_pred
+
+                # Identify xsmrpool index reliably
+                if varnames is not None and 'xsmrpool' in varnames:
+                    x_idx = varnames.index('xsmrpool')
+                else:
+                    # fallback to conventional index (cpool,npool,ppool,xsmrpool,tlai)
+                    x_idx = 3
+
+                # Split xsmrpool vs others
+                x_pred = vector_pred_reshaped[:, x_idx, :]
+                x_targ = vector_targ[:, x_idx, :]
+                other_pred = torch.cat([vector_pred_reshaped[:, :x_idx, :], vector_pred_reshaped[:, x_idx+1:, :]], dim=1)
+                other_targ = torch.cat([vector_targ[:, :x_idx, :], vector_targ[:, x_idx+1:, :]], dim=1)
+
+                # Apply weighted losses: upweight where xsmrpool target is negative (non-zero pool)
+                loss += self.vector_loss_weight * self._compute_loss(
+                    other_pred.view(other_pred.size(0), -1),
+                    other_targ.view(other_targ.size(0), -1)
+                )
+
+                # Weighted MSE for xsmrpool
+                x_pred_flat = x_pred.view(x_pred.size(0), -1)
+                x_targ_flat = x_targ.view(x_targ.size(0), -1)
+                with torch.no_grad():
+                    nz_mask = (x_targ_flat < 0).float()
+                base_w = 1.0
+                extra = max(1.0, xsmrpool_weight) - 1.0
+                weights = base_w + extra * nz_mask
+                se = (x_pred_flat - x_targ_flat) ** 2
+                weighted_mse = (se * weights).mean()
+                loss += self.vector_loss_weight * weighted_mse
+            except Exception:
+                # Fallback: original aggregate loss
+                loss += self.vector_loss_weight * self._compute_loss(
+                    vector_pred.view(vector_pred.size(0), -1),
+                    vector_targ.view(vector_targ.size(0), -1)
+                )
             # Optional sparsity regularization: penalize non-zero predictions where target is zero
             if getattr(self.config, 'pft_zero_sparsity_weight', 0.0) > 0.0:
                 with torch.no_grad():
@@ -396,7 +453,10 @@ class ModelTrainer:
                 except Exception:
                     pass
             # Matrix (Soil2D)
-            loss += self._compute_loss(outputs['soil_2d'].view(y_soil_2d.size(0), -1), y_soil_2d.view(y_soil_2d.size(0), -1))
+            loss += self.matrix_loss_weight * self._compute_loss(
+                outputs['soil_2d'].view(y_soil_2d.size(0), -1),
+                y_soil_2d.view(y_soil_2d.size(0), -1)
+            )
             if 'water' in self.train_data and 'y_water' in self.train_data and 'water' in outputs:
                 loss += self._compute_loss(outputs['water'], y_water)
 
@@ -1192,6 +1252,17 @@ class ModelTrainer:
                         )
                         var_predictions_original = var_predictions_denorm[:, :, 0]
                         logger.info(f"Applied inverse transformation to PFT 1D predictions for {var_name}")
+                        # Debug dump of normalized vs denorm xsmrpool
+                        try:
+                            if var_name.endswith('xsmrpool') and os.getenv('DUMP_XSMRPOOL_DEBUG', '0') == '1':
+                                import numpy as _np
+                                debug_dir = os.path.join(pft_1d_dir, 'debug')
+                                os.makedirs(debug_dir, exist_ok=True)
+                                _np.savetxt(os.path.join(debug_dir, 'xsmrpool_norm.csv'), var_predictions, delimiter=',')
+                                _np.savetxt(os.path.join(debug_dir, 'xsmrpool_denorm.csv'), var_predictions_original, delimiter=',')
+                                logger.info("Dumped xsmrpool normalized and denormalized predictions for debugging")
+                        except Exception as _e:
+                            logger.warning(f"Failed xsmrpool debug dump: {_e}")
                     else:
                         var_predictions_original = var_predictions
                         logger.warning(f"No PFT 1D scaler found for {var_name}, saving normalized values")

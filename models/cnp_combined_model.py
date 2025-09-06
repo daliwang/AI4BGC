@@ -415,8 +415,8 @@ class CNPCombinedModel(nn.Module):
         # 1D PFT output head (14 variables x 16 PFTs)
         self.pft_1d_head = nn.Sequential(
             nn.Linear(self.token_dim, 128),
-            nn.Identity(), # Temporarily removed ReLU for debugging xsmrpool
-            nn.Dropout(self.dropout_p),
+            nn.GELU(),  # Allows negative values while providing non-linearity
+            nn.Dropout(0.0),
             nn.Linear(128, self.pft_1d_input_size * self.model_config.vector_length)  # 14 x 16
         )
     
@@ -609,8 +609,11 @@ class CNPCombinedModel(nn.Module):
             
             for i, var_name in enumerate(pft_1d_varnames):
                 if var_name == 'xsmrpool':
-                    # Apply clamp for xsmrpool (non-positive)
-                    processed_slices.append(torch.clamp(pft_1d_reshaped[:, i, :], max=0.0).unsqueeze(1))
+                    # During training allow free values; enforce non-positivity only in eval
+                    if self.training:
+                        processed_slices.append(pft_1d_reshaped[:, i, :].unsqueeze(1))
+                    else:
+                        processed_slices.append(torch.clamp(pft_1d_reshaped[:, i, :], max=0.0).unsqueeze(1))
                 else:
                     # Apply ReLU for other variables (non-negative)
                     processed_slices.append(torch.relu(pft_1d_reshaped[:, i, :]).unsqueeze(1))
@@ -623,7 +626,8 @@ class CNPCombinedModel(nn.Module):
             # Fallback if the shape is not as expected, apply ReLU to all as a general constraint
             outputs['pft_1d'] = torch.relu(pft_1d_raw_output)
             
-        outputs['soil_2d'] = torch.relu(self.matrix_head(fused_features))
+        # Use Softplus to avoid dead ReLU on small positive targets
+        outputs['soil_2d'] = torch.nn.functional.softplus(self.matrix_head(fused_features))
         return outputs
     
     def get_loss_weights(self) -> Dict[str, float]:
