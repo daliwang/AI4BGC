@@ -27,6 +27,7 @@ import json
 # from config.training_config import TrainingConfig  # Uncomment if TrainingConfig is defined
 from models.combined_model import CombinedModel, FlexibleCombinedModel
 from models.cnp_combined_model import CNPCombinedModel
+from config.variable_weights import get_pft1d_variable_weights, get_soil2d_variable_weights, get_scalar_variable_weights
 
 # Import GPU monitoring
 from utils.gpu_monitor import GPUMonitor, log_memory_usage
@@ -193,8 +194,42 @@ class ModelTrainer:
         # Log initial GPU stats
         if self.config.log_gpu_memory:
             self.gpu_monitor.log_gpu_stats("Initial ")
+            
+        # Initialize variable-specific weights
+        self.use_variable_weights = getattr(self.config, 'use_variable_weights', True)
+        self._initialize_variable_weights()
         
         logger.info(f"Trainer initialized on device: {self.device}")
+    
+    def _initialize_variable_weights(self):
+        """Initialize variable-specific weights for loss calculation."""
+        self.pft1d_var_weights = None
+        self.soil2d_var_weights = None
+        self.scalar_var_weights = None
+        
+        if not self.use_variable_weights:
+            logger.info("Variable-specific weights disabled")
+            return
+            
+        # Get variable names from data_info if available
+        if hasattr(self, 'data_info'):
+            # PFT1D variables
+            if 'variables_1d_pft' in self.data_info:
+                pft1d_vars = self.data_info.get('variables_1d_pft', [])
+                self.pft1d_var_weights = get_pft1d_variable_weights(pft1d_vars)
+                logger.info(f"Initialized PFT1D variable weights: {self.pft1d_var_weights}")
+                
+            # Soil2D variables
+            if 'x_list_columns_2d' in self.data_info:
+                soil2d_vars = [var.replace('Y_', '') for var in self.data_info.get('y_list_columns_2d', [])]                
+                self.soil2d_var_weights = get_soil2d_variable_weights(soil2d_vars)
+                logger.info(f"Initialized Soil2D variable weights: {self.soil2d_var_weights}")
+                
+            # Scalar variables
+            if 'x_list_scalar_columns' in self.data_info:
+                scalar_vars = self.data_info.get('x_list_scalar_columns', [])
+                self.scalar_var_weights = get_scalar_variable_weights(scalar_vars)
+                logger.info(f"Initialized scalar variable weights: {self.scalar_var_weights}")
     
         # Use learnable loss weights if specified in config
         self.use_learnable_loss_weights = getattr(self.config, 'use_learnable_loss_weights', False)
@@ -381,8 +416,27 @@ class ModelTrainer:
                 else:
                     outputs = self.model(time_series, static, pft_param, scalar, variables_1d_pft, variables_2d_soil)
 
-            # Compute loss
-            loss = self.scalar_loss_weight * self._compute_loss(outputs['scalar'], y_scalar)
+            # Compute loss with variable-specific weights for scalar variables
+            if self.use_variable_weights and hasattr(self, 'scalar_var_weights') and self.scalar_var_weights:
+                # Apply variable-specific weights to scalar variables
+                scalar_loss = 0.0
+                scalar_pred = outputs['scalar']
+                
+                # Get variable names
+                scalar_vars = self.data_info.get('x_list_scalar_columns', [])
+                
+                for i, var_name in enumerate(scalar_vars):
+                    if i < scalar_pred.size(1):  # Ensure index is within bounds
+                        var_weight = self.scalar_var_weights.get(var_name, 1.0)
+                        var_loss = self._compute_loss(scalar_pred[:, i:i+1], y_scalar[:, i:i+1])
+                        scalar_loss += var_weight * var_loss
+                        
+                # Normalize by number of variables to maintain scale
+                scalar_loss = scalar_loss / max(1, len(scalar_vars))
+                loss = self.scalar_loss_weight * scalar_loss
+            else:
+                # Use standard loss calculation
+                loss = self.scalar_loss_weight * self._compute_loss(outputs['scalar'], y_scalar)
 
             # Vector (PFT1D): Apply differential weighting specifically to xsmrpool
             vector_pred = outputs['pft_1d']  # shape: [batch, n_vars*n_pfts] or [batch, n_vars, n_pfts]
@@ -417,11 +471,36 @@ class ModelTrainer:
                 other_pred = torch.cat([vector_pred_reshaped[:, :x_idx, :], vector_pred_reshaped[:, x_idx+1:, :]], dim=1)
                 other_targ = torch.cat([vector_targ[:, :x_idx, :], vector_targ[:, x_idx+1:, :]], dim=1)
 
-                # Apply weighted losses: upweight where xsmrpool target is negative (non-zero pool)
-                loss += self.vector_loss_weight * self._compute_loss(
-                    other_pred.view(other_pred.size(0), -1),
-                    other_targ.view(other_targ.size(0), -1)
-                )
+                # Apply variable-specific weights for PFT1D variables
+                if self.use_variable_weights and hasattr(self, 'pft1d_var_weights') and self.pft1d_var_weights:
+                    # Get variable names
+                    pft1d_vars = list(self.data_info.get('variables_1d_pft', []))
+                    pft1d_loss = 0.0
+                    
+                    # Process each variable separately (excluding xsmrpool which is handled specially)
+                    for i in range(other_pred.size(1)):
+                        # Map the index back to the original variable name
+                        var_idx = i if i < x_idx else i + 1  # Account for removed xsmrpool
+                        if var_idx < len(pft1d_vars):
+                            var_name = pft1d_vars[var_idx]
+                            var_weight = self.pft1d_var_weights.get(var_name, 1.0)
+                            
+                            # Extract this variable across all PFTs
+                            var_pred = other_pred[:, i:i+1, :].reshape(other_pred.size(0), -1)
+                            var_targ = other_targ[:, i:i+1, :].reshape(other_targ.size(0), -1)
+                            
+                            # Apply weighted loss
+                            var_loss = self._compute_loss(var_pred, var_targ)
+                            pft1d_loss += var_weight * var_loss
+                    
+                    # Add normalized loss
+                    loss += self.vector_loss_weight * pft1d_loss / max(1, other_pred.size(1))
+                else:
+                    # Apply standard loss for other variables
+                    loss += self.vector_loss_weight * self._compute_loss(
+                        other_pred.view(other_pred.size(0), -1),
+                        other_targ.view(other_targ.size(0), -1)
+                    )
 
                 # Weighted MSE for xsmrpool
                 x_pred_flat = x_pred.view(x_pred.size(0), -1)
@@ -452,11 +531,46 @@ class ModelTrainer:
                     loss = loss + self.config.pft_zero_sparsity_weight * sparsity_penalty
                 except Exception:
                     pass
-            # Matrix (Soil2D)
-            loss += self.matrix_loss_weight * self._compute_loss(
-                outputs['soil_2d'].view(y_soil_2d.size(0), -1),
-                y_soil_2d.view(y_soil_2d.size(0), -1)
-            )
+            # Matrix (Soil2D) with variable-specific weights
+            if self.use_variable_weights and hasattr(self, 'soil2d_var_weights') and self.soil2d_var_weights:
+                # Apply variable-specific weights to soil2D variables
+                soil2d_loss = 0.0
+                soil2d_pred = outputs['soil_2d']
+                
+                # Get variable names (remove 'Y_' prefix)
+                soil2d_vars = [var.replace('Y_', '') for var in self.data_info.get('y_list_columns_2d', [])]
+                
+                # Reshape predictions and targets for per-variable processing
+                n_vars = len(soil2d_vars)
+                batch_size = soil2d_pred.size(0)
+                
+                # Reshape to [batch, n_vars, ...] if needed
+                if soil2d_pred.dim() == 4:  # [batch, n_vars, rows, cols]
+                    soil2d_pred_reshaped = soil2d_pred
+                    soil2d_targ_reshaped = y_soil_2d
+                else:  # Need to reshape
+                    rows = y_soil_2d.size(2) if y_soil_2d.dim() >= 3 else 1
+                    cols = y_soil_2d.size(3) if y_soil_2d.dim() >= 4 else 1
+                    soil2d_pred_reshaped = soil2d_pred.view(batch_size, n_vars, rows, cols)
+                    soil2d_targ_reshaped = y_soil_2d
+                
+                # Calculate weighted loss for each variable
+                for i, var_name in enumerate(soil2d_vars):
+                    if i < soil2d_pred_reshaped.size(1):  # Ensure index is within bounds
+                        var_weight = self.soil2d_var_weights.get(var_name, 1.0)
+                        var_pred = soil2d_pred_reshaped[:, i:i+1].reshape(batch_size, -1)
+                        var_targ = soil2d_targ_reshaped[:, i:i+1].reshape(batch_size, -1)
+                        var_loss = self._compute_loss(var_pred, var_targ)
+                        soil2d_loss += var_weight * var_loss
+                
+                # Normalize by number of variables
+                loss += self.matrix_loss_weight * soil2d_loss / max(1, n_vars)
+            else:
+                # Use standard loss calculation
+                loss += self.matrix_loss_weight * self._compute_loss(
+                    outputs['soil_2d'].view(y_soil_2d.size(0), -1),
+                    y_soil_2d.view(y_soil_2d.size(0), -1)
+                )
             if 'water' in self.train_data and 'y_water' in self.train_data and 'water' in outputs:
                 loss += self._compute_loss(outputs['water'], y_water)
 
@@ -1382,6 +1496,15 @@ class ModelTrainer:
                         per_var_denorm = scaler_mgr.inverse_transform_soil_2d(per_var_tensor, [var_name], num_layers)
                         var_predictions_original = per_var_denorm[:, 0, :, :]
                         logger.info(f"Applied inverse transformation to soil 2D predictions for {var_name}")
+                        # Optional debug: dump a layer vector for minerals and primp
+                        try:
+                            if (var_name in ['Y_sminn_vr','Y_smin_no3_vr','Y_smin_nh4_vr','Y_primp_vr']) and os.getenv('DUMP_SOIL_DEBUG','0')=='1':
+                                import numpy as _np
+                                dbg_dir = os.path.join(soil_2d_dir, 'debug')
+                                os.makedirs(dbg_dir, exist_ok=True)
+                                _np.savetxt(os.path.join(dbg_dir, f'{var_name}_row0_layers.csv'), var_predictions_original[0,0,:], delimiter=',')
+                        except Exception as _e:
+                            logger.warning(f"Failed soil debug dump for {var_name}: {_e}")
                     else:
                         var_predictions_original = var_predictions
                         logger.warning(f"No soil 2D scaler found for {var_name}, saving normalized values")

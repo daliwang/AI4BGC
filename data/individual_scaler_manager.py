@@ -445,8 +445,29 @@ class IndividualScalerManager:
                 # Reshape for scaler (samples, features)
                 layer_data_reshaped = layer_data.reshape(layer_data.shape[0], -1)
                 
-                # Inverse transform
-                denormalized_layer = scaler.inverse_transform(layer_data_reshaped)
+                # Inverse transform with zero-range guard
+                try:
+                    if hasattr(scaler, 'data_range_'):
+                        rng = float(np.max(scaler.data_range_)) if np.ndim(scaler.data_range_) else float(scaler.data_range_)
+                        if rng <= 1e-12:
+                            const_val = float(np.max(scaler.data_min_)) if hasattr(scaler, 'data_min_') else 0.0
+                            denormalized_layer = np.full_like(layer_data_reshaped, const_val)
+                            logger.warning(f"Zero-range MinMax scaler for {scaler_key}; using constant {const_val:.6g}")
+                        else:
+                            denormalized_layer = scaler.inverse_transform(layer_data_reshaped)
+                    elif hasattr(scaler, 'scale_'):
+                        sc = float(np.max(np.abs(scaler.scale_)))
+                        if sc <= 1e-12:
+                            const_val = float(np.max(scaler.mean_)) if hasattr(scaler, 'mean_') else 0.0
+                            denormalized_layer = np.full_like(layer_data_reshaped, const_val)
+                            logger.warning(f"Zero-scale standard/robust scaler for {scaler_key}; using mean {const_val:.6g}")
+                        else:
+                            denormalized_layer = scaler.inverse_transform(layer_data_reshaped)
+                    else:
+                        denormalized_layer = scaler.inverse_transform(layer_data_reshaped)
+                except Exception as e:
+                    logger.warning(f"inverse_transform failed for {scaler_key}: {e}; passing through normalized values")
+                    denormalized_layer = layer_data_reshaped
                 # Safety: clean NaN/Inf
                 denormalized_layer = np.nan_to_num(denormalized_layer, nan=0.0, posinf=0.0, neginf=0.0)
                 
