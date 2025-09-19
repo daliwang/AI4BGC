@@ -554,10 +554,26 @@ class ModelTrainer:
                     soil2d_pred_reshaped = soil2d_pred.view(batch_size, n_vars, rows, cols)
                     soil2d_targ_reshaped = y_soil_2d
                 
-                # Calculate weighted loss for each variable
+                # Calculate weighted loss for each variable, applying litter overrides if provided
+                litter_c_names = {'litr1c_vr', 'litr2c_vr', 'litr3c_vr'}
+                litter_n_names = {'litr1n_vr', 'litr2n_vr', 'litr3n_vr'}
+                litter_p_names = {'litr1p_vr', 'litr2p_vr', 'litr3p_vr'}
+                litter_c_w = getattr(self.config, 'litter_c_loss_weight', 1.0)
+                litter_n_w = getattr(self.config, 'litter_n_loss_weight', 1.0)
+                litter_p_w = getattr(self.config, 'litter_p_loss_weight', 1.0)
+
                 for i, var_name in enumerate(soil2d_vars):
                     if i < soil2d_pred_reshaped.size(1):  # Ensure index is within bounds
-                        var_weight = self.soil2d_var_weights.get(var_name, 1.0)
+                        base_weight = self.soil2d_var_weights.get(var_name, 1.0)
+                        # Apply litter overrides to base weight (multiplicative)
+                        if var_name in litter_c_names:
+                            var_weight = base_weight * litter_c_w
+                        elif var_name in litter_n_names:
+                            var_weight = base_weight * litter_n_w
+                        elif var_name in litter_p_names:
+                            var_weight = base_weight * litter_p_w
+                        else:
+                            var_weight = base_weight
                         var_pred = soil2d_pred_reshaped[:, i:i+1].reshape(batch_size, -1)
                         var_targ = soil2d_targ_reshaped[:, i:i+1].reshape(batch_size, -1)
                         var_loss = self._compute_loss(var_pred, var_targ)
@@ -1089,6 +1105,15 @@ class ModelTrainer:
         # Concatenate all batches
         predictions = {k: torch.cat(v, dim=0) for k, v in all_predictions.items()}
         targets = {k: torch.cat(v, dim=0) for k, v in all_targets.items()}
+        
+        # Debug: Print shapes to identify the issue
+        print(f"[DEBUG] Evaluation - predictions shapes:")
+        for k, v in predictions.items():
+            print(f"  {k}: {v.shape}")
+        print(f"[DEBUG] Evaluation - targets shapes:")
+        for k, v in targets.items():
+            print(f"  {k}: {v.shape}")
+        
         # Calculate metrics
         metrics = self._calculate_metrics(predictions, targets)
         return predictions, metrics
@@ -1101,7 +1126,21 @@ class ModelTrainer:
         target_scalar_full = targets['y_scalar'].cpu().numpy()
         # Overall scalar metrics
         mask_all = ~np.isnan(pred_scalar_full) & ~np.isnan(target_scalar_full)
-        mse_scalar_all = mean_squared_error(target_scalar_full[mask_all], pred_scalar_full[mask_all])
+        # Ensure arrays have the same shape before flattening
+        if pred_scalar_full.shape != target_scalar_full.shape:
+            print(f"Warning: Shape mismatch - pred: {pred_scalar_full.shape}, target: {target_scalar_full.shape}")
+            # Use the minimum shape to avoid indexing errors
+            min_shape = (min(pred_scalar_full.shape[0], target_scalar_full.shape[0]), 
+                        min(pred_scalar_full.shape[1], target_scalar_full.shape[1]))
+            pred_scalar_full = pred_scalar_full[:min_shape[0], :min_shape[1]]
+            target_scalar_full = target_scalar_full[:min_shape[0], :min_shape[1]]
+            mask_all = ~np.isnan(pred_scalar_full) & ~np.isnan(target_scalar_full)
+        
+        # Flatten arrays and mask for overall metrics
+        pred_flat = pred_scalar_full.flatten()
+        target_flat = target_scalar_full.flatten()
+        mask_flat = mask_all.flatten()
+        mse_scalar_all = mean_squared_error(target_flat[mask_flat], pred_flat[mask_flat])
         metrics['scalar_rmse'] = np.sqrt(mse_scalar_all)
         metrics['scalar_mse'] = mse_scalar_all
         # Per-scalar metrics with names
@@ -1139,7 +1178,20 @@ class ModelTrainer:
             var_names = [f'pft_1d_var_{i}' for i in range(num_variables)]
         # Overall metrics for pft_1d
         mask = ~np.isnan(pred_pft_1d) & ~np.isnan(target_pft_1d)
-        mse_pft_1d = mean_squared_error(target_pft_1d[mask], pred_pft_1d[mask])
+        # Ensure arrays have the same shape before flattening
+        if pred_pft_1d.shape != target_pft_1d.shape:
+            print(f"Warning: PFT 1D shape mismatch - pred: {pred_pft_1d.shape}, target: {target_pft_1d.shape}")
+            # Use the minimum shape to avoid indexing errors
+            min_shape = tuple(min(pred_pft_1d.shape[i], target_pft_1d.shape[i]) for i in range(len(pred_pft_1d.shape)))
+            pred_pft_1d = pred_pft_1d[:min_shape[0], :min_shape[1], :min_shape[2]]
+            target_pft_1d = target_pft_1d[:min_shape[0], :min_shape[1], :min_shape[2]]
+            mask = ~np.isnan(pred_pft_1d) & ~np.isnan(target_pft_1d)
+        
+        # Flatten arrays and mask for overall metrics
+        pred_flat = pred_pft_1d.flatten()
+        target_flat = target_pft_1d.flatten()
+        mask_flat = mask.flatten()
+        mse_pft_1d = mean_squared_error(target_flat[mask_flat], pred_flat[mask_flat])
         metrics['pft_1d_rmse'] = np.sqrt(mse_pft_1d)
         metrics['pft_1d_mse'] = mse_pft_1d
         # Detailed metrics per variable and PFT
@@ -1178,7 +1230,22 @@ class ModelTrainer:
         pred_soil_2d_flat = pred_soil_2d.reshape(n_samples, -1)
         target_soil_2d_flat = target_soil_2d.reshape(n_samples, -1)
         mask = ~np.isnan(pred_soil_2d_flat) & ~np.isnan(target_soil_2d_flat)
-        mse_soil_2d = mean_squared_error(target_soil_2d_flat[mask], pred_soil_2d_flat[mask])
+        
+        # Ensure arrays have the same shape before flattening
+        if pred_soil_2d_flat.shape != target_soil_2d_flat.shape:
+            print(f"Warning: Soil 2D shape mismatch - pred: {pred_soil_2d_flat.shape}, target: {target_soil_2d_flat.shape}")
+            # Use the minimum shape to avoid indexing errors
+            min_shape = (min(pred_soil_2d_flat.shape[0], target_soil_2d_flat.shape[0]), 
+                        min(pred_soil_2d_flat.shape[1], target_soil_2d_flat.shape[1]))
+            pred_soil_2d_flat = pred_soil_2d_flat[:min_shape[0], :min_shape[1]]
+            target_soil_2d_flat = target_soil_2d_flat[:min_shape[0], :min_shape[1]]
+            mask = ~np.isnan(pred_soil_2d_flat) & ~np.isnan(target_soil_2d_flat)
+        
+        # Flatten arrays and mask for overall metrics
+        pred_flat = pred_soil_2d_flat.flatten()
+        target_flat = target_soil_2d_flat.flatten()
+        mask_flat = mask.flatten()
+        mse_soil_2d = mean_squared_error(target_flat[mask_flat], pred_flat[mask_flat])
         metrics['soil_2d_rmse'] = np.sqrt(mse_soil_2d)
         metrics['soil_2d_mse'] = mse_soil_2d
         # Per-variable per-layer metrics (aggregated across columns)
@@ -1292,7 +1359,14 @@ class ModelTrainer:
 
         # Save scalar predictions with inverse transformation
         predictions_scalar_np = predictions['scalar'].cpu().numpy()
-        scalar_cols = self.data_info['y_list_scalar_columns'][:predictions_scalar_np.shape[1]]
+        
+        # Handle shape mismatch - only use the first scalar output if model outputs more than expected
+        num_expected_scalars = len(self.data_info['y_list_scalar_columns'])
+        if predictions_scalar_np.shape[1] > num_expected_scalars:
+            print(f"Warning: Model outputs {predictions_scalar_np.shape[1]} scalars but only {num_expected_scalars} expected. Using first {num_expected_scalars}.")
+            predictions_scalar_np = predictions_scalar_np[:, :num_expected_scalars]
+        
+        scalar_cols = self.data_info['y_list_scalar_columns']
         
         # Apply inverse transformation to convert from normalized to original units
         try:
@@ -1315,6 +1389,11 @@ class ModelTrainer:
         # Save ground truth scalar with inverse transformation if available
         if 'y_scalar' in self.test_data:
             ground_truth_scalar_np = self.test_data['y_scalar'].cpu().numpy()
+            
+            # Handle shape mismatch - ensure ground truth matches expected scalar count
+            if ground_truth_scalar_np.shape[1] > num_expected_scalars:
+                print(f"Warning: Ground truth has {ground_truth_scalar_np.shape[1]} scalars but only {num_expected_scalars} expected. Using first {num_expected_scalars}.")
+                ground_truth_scalar_np = ground_truth_scalar_np[:, :num_expected_scalars]
             
             # Apply inverse transformation to ground truth as well
             try:

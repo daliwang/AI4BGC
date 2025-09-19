@@ -1,7 +1,7 @@
 TIME SERIES VARIABLES (Climate Forcing) - 6 variables:
 • FLDS, PSRF, FSDS, QBOT, PRECTmms, TBOT 
 
-SURFACE PROPERTIES - 27 variables:
+SURFACE PROPERTIES - 49 variables:
 • Latitude, Longitude, AREA, landfrac, LANDFRAC_PFT, PCT_NATVEG
 
 • OCCLUDED_P, SECONDARY_P, LABILE_P, APATITE_P

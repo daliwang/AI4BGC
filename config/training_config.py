@@ -166,6 +166,10 @@ class TrainingConfig:
     matrix_loss_weight: float = 1.0
     # Specific variable weights
     xsmrpool_loss_weight: float = 10.0
+    # Litter pools (2D soil) weights
+    litter_c_loss_weight: float = 1.0  # applies to litr1c_vr, litr2c_vr, litr3c_vr
+    litter_n_loss_weight: float = 1.0  # applies to litr1n_vr, litr2n_vr, litr3n_vr
+    litter_p_loss_weight: float = 1.0  # applies to litr1p_vr, litr2p_vr, litr3p_vr
     
     # Optimizer
     optimizer_type: str = 'adam'  # 'adam', 'sgd', 'adamw'

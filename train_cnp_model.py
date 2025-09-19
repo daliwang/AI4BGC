@@ -183,6 +183,24 @@ def main():
         default=None,
         help='Extra loss weight applied to xsmrpool (non-positive pool)'
     )
+    parser.add_argument(
+        '--litter-c-loss-weight',
+        type=float,
+        default=None,
+        help='Extra loss weight multiplier for litter carbon vars (litr1/2/3c_vr)'
+    )
+    parser.add_argument(
+        '--litter-n-loss-weight',
+        type=float,
+        default=None,
+        help='Extra loss weight multiplier for litter nitrogen vars (litr1/2/3n_vr)'
+    )
+    parser.add_argument(
+        '--litter-p-loss-weight',
+        type=float,
+        default=None,
+        help='Extra loss weight multiplier for litter phosphorus vars (litr1/2/3p_vr)'
+    )
     
     args = parser.parse_args()
     
@@ -258,6 +276,19 @@ def main():
                 logger.info(f"Using xsmrpool loss weight: {config.training_config.xsmrpool_loss_weight}")
             except Exception as e:
                 logger.warning(f"Failed to set xsmrpool loss weight: {e}")
+        # apply litter weights if provided
+        try:
+            if args.litter_c_loss_weight is not None:
+                config.update_training_config(litter_c_loss_weight=float(args.litter_c_loss_weight))
+                logger.info(f"Using litter C loss weight: {config.training_config.litter_c_loss_weight}")
+            if args.litter_n_loss_weight is not None:
+                config.update_training_config(litter_n_loss_weight=float(args.litter_n_loss_weight))
+                logger.info(f"Using litter N loss weight: {config.training_config.litter_n_loss_weight}")
+            if args.litter_p_loss_weight is not None:
+                config.update_training_config(litter_p_loss_weight=float(args.litter_p_loss_weight))
+                logger.info(f"Using litter P loss weight: {config.training_config.litter_p_loss_weight}")
+        except Exception as e:
+            logger.warning(f"Failed to set litter loss weights: {e}")
         logger.info(f"Effective learning rate for this run: {effective_lr}")
 
         # Optional strict determinism (opt-in via CLI)
