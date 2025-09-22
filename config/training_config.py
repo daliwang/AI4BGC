@@ -13,6 +13,7 @@ import torch.optim as optim
 import logging
 import os
 import re
+import ast
 
 
 @dataclass
@@ -448,12 +449,109 @@ def parse_cnp_io_list(filename):
                         result[current_section].append(line)
     return result
 
+def parse_cnp_model_config(filename: str) -> Dict[str, Any]:
+    """
+    Parse a simple text-based model configuration file into a dictionary of
+    ModelConfig overrides. The format supports lines of the form:
+
+      key = value
+
+    Where value can be:
+      - int/float (e.g., 64, 0.1)
+      - bool (true/false/yes/no/on/off)
+      - comma-separated list (e.g., 16,32,64)
+      - Python-like list (e.g., [16, 32, 64])
+      - quoted string ("text" or 'text')
+
+    Blank lines and lines starting with # or ; are ignored. Section headers
+    like [ENCODERS] are allowed and ignored.
+
+    Returns a dict of parsed keys to values. Unknown keys will be filtered out
+    by the caller when applying to ModelConfig.
+    """
+    overrides: Dict[str, Any] = {}
+    if filename is None:
+        return overrides
+    try:
+        with open(filename, 'r') as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith('#') or line.startswith(';'):
+                    continue
+                # Ignore section headers like [SECTION]
+                if line.startswith('[') and line.endswith(']'):
+                    continue
+                # Support key: value or key = value
+                if ':' in line or '=' in line:
+                    if ':' in line and '=' in line:
+                        # take first delimiter appearance
+                        idx_colon = line.find(':')
+                        idx_eq = line.find('=')
+                        idx = min(idx_colon, idx_eq)
+                        key = line[:idx].strip()
+                        value_str = line[idx+1:].strip()
+                    else:
+                        parts = re.split(r'[:=]', line, maxsplit=1)
+                        if len(parts) != 2:
+                            continue
+                        key, value_str = parts[0].strip(), parts[1].strip()
+                    if not key:
+                        continue
+                    # Normalize booleans
+                    low = value_str.lower()
+                    if low in ('true', 'yes', 'on'):
+                        overrides[key] = True
+                        continue
+                    if low in ('false', 'no', 'off'):
+                        overrides[key] = False
+                        continue
+                    # Try Python literal (list, int, float, string)
+                    parsed_val: Any = None
+                    try:
+                        parsed_val = ast.literal_eval(value_str)
+                    except Exception:
+                        # Fallback: comma-separated list without brackets
+                        if ',' in value_str:
+                            items = [v.strip() for v in value_str.split(',') if v.strip()]
+                            # Try to cast each item to int/float where possible
+                            cast_items: List[Any] = []
+                            for it in items:
+                                try:
+                                    cast_items.append(int(it))
+                                    continue
+                                except Exception:
+                                    pass
+                                try:
+                                    cast_items.append(float(it))
+                                    continue
+                                except Exception:
+                                    pass
+                                cast_items.append(it)
+                            parsed_val = cast_items
+                        else:
+                            # Try number cast
+                            try:
+                                parsed_val = int(value_str)
+                            except Exception:
+                                try:
+                                    parsed_val = float(value_str)
+                                except Exception:
+                                    # Strip quotes if present
+                                    parsed_val = value_str.strip('"\'')
+                    overrides[key] = parsed_val
+    except FileNotFoundError:
+        logging.warning(f"Model config file not found: {filename}. Using defaults.")
+    except Exception as e:
+        logging.warning(f"Failed to parse model config file {filename}: {e}")
+    return overrides
+
 def get_cnp_combined_config(
     use_trendy1: bool = True,
     use_trendy05: bool = True,
     max_files: Optional[int] = None,
     include_water: bool = False,
-    variable_list_path: Optional[str] = None
+    variable_list_path: Optional[str] = None,
+    model_config_path: Optional[str] = None
 ) -> TrainingConfigManager:
     """
     Get CNP model configuration for Trendy_1_data_CNP, Trendy_05_data_CNP, or both.
@@ -570,7 +668,7 @@ def get_cnp_combined_config(
         y_list_columns_2d=output_2d
     )
     
-    # Model configuration for CNP architecture
+    # Model configuration for CNP architecture (defaults)
     config.update_model_config(
         # LSTM for time series (6 variables, 20 years)
         lstm_hidden_size=64,  # Reduced from 128
@@ -617,6 +715,24 @@ def get_cnp_combined_config(
     )
     config.model_config.pft_param_size = len(pft_parameters)  # which is 44
     config.model_config.use_cnn_for_pft_param = True  # Use CNN for CNPCombinedModel
+
+    # Optional: override model architecture from a text config file
+    if model_config_path is not None:
+        try:
+            overrides = parse_cnp_model_config(model_config_path)
+            if overrides:
+                # Only apply keys that exist on ModelConfig
+                applicable = {}
+                for k, v in overrides.items():
+                    if hasattr(config.model_config, k):
+                        applicable[k] = v
+                    else:
+                        logging.info(f"Ignoring unknown ModelConfig key in {model_config_path}: {k}")
+                if applicable:
+                    config.update_model_config(**applicable)
+                    logging.info(f"Applied {len(applicable)} ModelConfig overrides from {model_config_path}")
+        except Exception as e:
+            logging.warning(f"Could not apply model config overrides from {model_config_path}: {e}")
     
     # Training configuration
     config.update_training_config(

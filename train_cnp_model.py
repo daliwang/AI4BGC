@@ -166,6 +166,12 @@ def main():
         help='Path to variable list file (e.g., CNP_IO_list_default.txt) for dynamic configuration'
     )
     parser.add_argument(
+        '--model-config',
+        type=str,
+        default=None,
+        help='Path to model config text file (e.g., CNP_model_config.txt) to override encoders/transformer/MLPs'
+    )
+    parser.add_argument(
         '--max-files',
         type=int,
         default=None,
@@ -232,25 +238,22 @@ def main():
         # include_water = args.with_water
         logger.info(f"Water variables included: {include_water}")
         
-        # Get configuration
+        # Get configuration (support variable list and optional model-config overrides)
+        from config.training_config import get_cnp_combined_config
+        config = get_cnp_combined_config(
+            use_trendy1=args.use_trendy1,
+            use_trendy05=args.use_trendy05,
+            max_files=args.max_files,
+            include_water=include_water,
+            variable_list_path=args.variable_list,
+            model_config_path=args.model_config
+        )
         if args.variable_list is not None:
-            from config.training_config import get_cnp_combined_config
-            config = get_cnp_combined_config(
-                use_trendy1=args.use_trendy1,
-                use_trendy05=args.use_trendy05,
-                max_files=args.max_files,  # You can add a CLI arg for this if needed
-                include_water=include_water,
-                variable_list_path=args.variable_list
-            )
             logger.info(f"Using CNP configuration from variable list file: {args.variable_list}")
         else:
-            from config.training_config import get_cnp_model_config
-            config = get_cnp_model_config(
-                include_water=include_water,
-                use_trendy1=args.use_trendy1,
-                use_trendy05=args.use_trendy05
-            )
-            logger.info(f"Using default CNP configuration{' with water' if include_water else ' without water'}")
+            logger.info(f"Using default CNP variable configuration{' with water' if include_water else ' without water'}")
+        if args.model_config is not None:
+            logger.info(f"Applied model architecture overrides from: {args.model_config}")
         # Set train/validation split to 50/50
         config.update_data_config(train_split=0.8)
         # Ensure GPU and all files
