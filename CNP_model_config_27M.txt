@@ -14,7 +14,7 @@ static_fc_size = 98
 pft_param_cnn_channels = [32, 64, 128]
 pft_param_cnn_kernel_size = 3
 pft_param_cnn_padding = 1
-use_cnn_for_pft_param = false
+use_cnn_for_pft_param = true
 pft_param_size = 44
 num_pfts = 17
 
