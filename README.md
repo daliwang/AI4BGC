@@ -34,6 +34,34 @@ python train_cnp_model.py \
 - Uses production datasets (not included here) and full variable lists.
 - See `python train_cnp_model.py --help` for all options.
 
+### 4) Dynamic model configuration (architecture overrides)
+
+Use `--model-config` to override model architecture dynamically via a simple text file. Two example configs are provided:
+
+- `CNP_model_config_v01.txt`: compact architecture tuned for quick runs
+- `CNP_model_config_27M.txt`: larger architecture approximating 27M parameters
+
+Examples:
+
+```bash
+# Compact config
+python train_cnp_model.py \
+  --variable-list CNP_IO_LiterP.txt \
+  --model-config CNP_model_config_v01.txt \
+  --epochs 5 --batch-size 128 --learning-rate 1e-4
+
+# Larger 27M-like config
+python train_cnp_model.py \
+  --variable-list CNP_IO_list1.txt \
+  --model-config CNP_model_config_27M.txt \
+  --epochs 300 --batch-size 128 --learning-rate 1e-4
+```
+
+Notes:
+- The config parser supports `key = value`, lists (comma-separated or Python lists), and booleans.
+- Unknown keys are ignored safely; only recognized `ModelConfig` fields are applied.
+- For PFT-parameter encoder consistency, prefer `use_cnn_for_pft_param = true` when supplying 3D PFT parameter tensors.
+
 ---
 
 ## 🧠 Training defaults and controls

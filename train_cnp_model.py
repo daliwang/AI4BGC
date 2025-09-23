@@ -16,7 +16,20 @@ CNP_IO_list1.txt structure with the following architecture:
 - Multi-task perceptrons for separate predictions
 
 Usage:
-    python train_cnp_model.py [--with-water]
+    python train_cnp_model.py [--with-water] [--variable-list CNP_IO_*.txt] [--model-config CNP_model_config_*.txt]
+
+Examples:
+    # Default variables with compact architecture overrides
+    python train_cnp_model.py \
+        --variable-list CNP_IO_LiterP.txt \
+        --model-config CNP_model_config_v01.txt \
+        --epochs 5 --batch-size 128 --learning-rate 1e-4
+
+    # Full variable list with larger 27M-like architecture
+    python train_cnp_model.py \
+        --variable-list CNP_IO_list1.txt \
+        --model-config CNP_model_config_27M.txt \
+        --epochs 300 --batch-size 128 --learning-rate 1e-4
 """
 
 import sys
