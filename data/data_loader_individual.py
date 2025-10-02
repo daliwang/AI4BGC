@@ -402,6 +402,17 @@ class DataLoaderIndividual:
             'y_water': y_water_tensor,
             'scalers': self.scalers
         }
+        # Add per-sample PFT mask derived from raw PCT_NAT_PFT_1..16 (1 where >0, else 0)
+        try:
+            pct_cols = [f'PCT_NAT_PFT_{i}' for i in range(1, 17)]
+            if all(c in self.df.columns for c in pct_cols):
+                pct = self.df[pct_cols].values.astype(np.float32)
+                mask = (pct > 0.0).astype(np.float32)  # shape [N,16]
+                ret['pft_presence_mask'] = torch.tensor(mask, dtype=self.preprocessing_config.data_type)
+            else:
+                logger.warning("Some PCT_NAT_PFT_1..16 columns are missing; pft_presence_mask not created")
+        except Exception as _e:
+            logger.warning(f"Failed to create pft_presence_mask: {_e}")
         # Optional dump after normalization (group)
         if os.getenv('DUMP_ALL_PFT_SOIL', '0') == '1':
             try:
@@ -502,6 +513,17 @@ class DataLoaderIndividual:
             'y_water': y_water_tensor,
             'scalers': self.scalers
         }
+        # Add per-sample PFT mask derived from raw PCT_NAT_PFT_1..16 (1 where >0, else 0)
+        try:
+            pct_cols = [f'PCT_NAT_PFT_{i}' for i in range(1, 17)]
+            if all(c in self.df.columns for c in pct_cols):
+                pct = self.df[pct_cols].values.astype(np.float32)
+                mask = (pct > 0.0).astype(np.float32)  # shape [N,16]
+                ret['pft_presence_mask'] = torch.tensor(mask, dtype=self.preprocessing_config.data_type)
+            else:
+                logger.warning("Some PCT_NAT_PFT_1..16 columns are missing; pft_presence_mask not created")
+        except Exception as _e:
+            logger.warning(f"Failed to create pft_presence_mask: {_e}")
         # Optional dump after normalization (individual)
         if os.getenv('DUMP_ALL_PFT_SOIL', '0') == '1':
             try:
@@ -1478,6 +1500,15 @@ class DataLoaderIndividual:
         if 'y_water' in normalized_data and normalized_data['y_water'] is not None:
             train_data['y_water'] = normalized_data['y_water'][:train_size]
             test_data['y_water'] = normalized_data['y_water'][train_size:]
+
+        # Split PFT presence mask if present
+        if 'pft_presence_mask' in normalized_data:
+            ppm = normalized_data['pft_presence_mask']
+            try:
+                train_data['pft_presence_mask'] = ppm[:train_size]
+                test_data['pft_presence_mask'] = ppm[train_size:]
+            except Exception:
+                logger.warning("pft_presence_mask present but could not be split; skipping")
         
         logger.info(f"Split completed:")
         logger.info(f"  - Train time_series shape: {train_time_series.shape}")
@@ -1497,6 +1528,9 @@ class DataLoaderIndividual:
             final_keys.append('water')
             final_keys.append('y_water')
 
+        # Optionally include presence mask
+        if 'pft_presence_mask' in train_data:
+            final_keys.append('pft_presence_mask')
         train_data = {k: v for k, v in train_data.items() if k in final_keys}
         test_data = {k: v for k, v in test_data.items() if k in final_keys}
         

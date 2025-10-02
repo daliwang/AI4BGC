@@ -231,6 +231,9 @@ class TrainingConfig:
     pft_zero_sparsity_weight: float = 0.0  # default disabled; set >0 to enable
     pft_zero_threshold: float = 1e-8       # threshold in normalized target space for zero mask
 
+    # Mask predictions for absent PFTs using PCT_NAT_PFT (PFT0 ignored)
+    mask_absent_pfts: bool = False
+
     def get_device(self) -> torch.device:
         """Get the appropriate device for training."""
         if self.device == 'auto':

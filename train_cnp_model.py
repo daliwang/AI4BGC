@@ -220,6 +220,11 @@ def main():
         default=None,
         help='Extra loss weight multiplier for litter phosphorus vars (litr1/2/3p_vr)'
     )
+    parser.add_argument(
+        '--mask-absent-pfts',
+        action='store_true',
+        help='Zero predictions where PCT_NAT_PFT_k == 0 and exclude from loss'
+    )
     
     args = parser.parse_args()
     
@@ -285,6 +290,12 @@ def main():
             predictions_dir=str(output_dir / "cnp_predictions"),
             use_early_stopping=False
         )
+        if args.mask_absent_pfts:
+            try:
+                config.update_training_config(mask_absent_pfts=True)
+                logger.info("Masking absent PFTs enabled (using PCT_NAT_PFT_1..16)")
+            except Exception as e:
+                logger.warning(f"Failed to enable mask_absent_pfts: {e}")
         # apply xsmrpool loss weight from CLI if provided
         if args.xsmrpool_loss_weight is not None:
             try:
