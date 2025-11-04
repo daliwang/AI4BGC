@@ -1,7 +1,7 @@
 
 # AI4BGC v0.1 – Artificial Intelligence for Biogeochemical Cycles
 
-AI4BGC is a deep learning framework for modeling terrestrial biogeochemical cycles with modern neural architectures and a flexible data pipeline.
+AI4BGC is a deep learning framework for modeling terrestrial biogeochemical cycles with modern neural architectures and a flexible data pipeline. It has been integerated into a new repo LandSim at https://github.com/daliwang/LandSim.git
 
 ---
 
